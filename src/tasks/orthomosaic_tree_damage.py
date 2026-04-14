@@ -430,8 +430,14 @@ def build_tree_damage_prompt(
     labels: tuple[DamageLabel, ...],
 ) -> str:
     label_descriptions = {
-        "fallen_tree": "fallen_tree: 树干或树冠明显倒伏、横卧、顺坡倾倒，和周边直立树形成明显差异。",
-        "diseased_tree": "diseased_tree: 树冠明显发黄、发红、灰败、稀疏或局部枯死，呈现可疑病害或衰败迹象。",
+        "fallen_tree": (
+            "fallen_tree: 必须是可见树木本体发生倒伏，树干或树冠明显横卧、倾倒，"
+            "并与周边直立树形成清晰差异。"
+        ),
+        "diseased_tree": (
+            "diseased_tree: 必须是可见树木本体出现异常，树冠明显发黄、发红、灰败、"
+            "稀疏或局部枯死，呈现可疑病害或衰败迹象。"
+        ),
     }
     requested_labels = "\n".join(label_descriptions[label] for label in labels)
     return (
@@ -453,8 +459,12 @@ def build_tree_damage_prompt(
         "}\n"
         "要求:\n"
         "1. bbox 使用当前切片内的像素坐标。\n"
-        "2. 如果没有可信目标，detections 返回空数组。\n"
-        "3. 不要输出 markdown，不要附加解释。"
+        "2. 只有在图中能明确看到树干、树冠或整株树木，并且异常属于树木本体时，才能输出检测框。\n"
+        "3. 电塔、输电杆塔、电线杆、导线、绝缘子、塔基、拉线、检修路、塔影或清障带都不是目标；"
+        "电塔附近的几何结构、阴影、高亮反光、裸地扰动也不要当作倒伏树或病害树。\n"
+        "4. 若目标紧邻电塔或导线，但无法确认异常主体是树木本体，必须放弃检测，detections 返回空数组。\n"
+        "5. 如果没有可信目标，detections 返回空数组。\n"
+        "6. 不要输出 markdown，不要附加解释。"
     )
 
 

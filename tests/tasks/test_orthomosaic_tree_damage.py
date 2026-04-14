@@ -14,6 +14,7 @@ from src.tasks.orthomosaic_tree_damage import (
     TileCandidate,
     build_damage_tile_candidates,
     build_region_candidates,
+    build_tree_damage_prompt,
     parse_tree_damage_response,
     parse_tree_region_response,
     project_tile_detection,
@@ -63,6 +64,27 @@ def test_parse_tree_region_response_parses_expected_json() -> None:
     assert parsed.score == 0.81
     assert parsed.tree_coverage == 0.46
     assert parsed.reason == "存在明显林冠"
+
+
+def test_build_tree_damage_prompt_excludes_power_tower_artifacts() -> None:
+    tile = TileCandidate(
+        tile_id="region_00001_tile_0003",
+        region_id="region_00001",
+        row_off=0,
+        col_off=0,
+        width=512,
+        height=512,
+        vegetation_fraction=0.35,
+        texture_score=0.22,
+        candidate_score=0.41,
+    )
+
+    prompt = build_tree_damage_prompt(tile, ("fallen_tree", "diseased_tree"))
+
+    assert "只有在图中能明确看到树干、树冠或整株树木" in prompt
+    assert "电塔、输电杆塔、电线杆" in prompt
+    assert "塔影或清障带都不是目标" in prompt
+    assert "无法确认异常主体是树木本体，必须放弃检测" in prompt
 
 
 def test_parse_tree_damage_response_supports_markdown_and_alias_labels() -> None:
