@@ -78,6 +78,8 @@ class OrthomosaicTreeDamageConfig:
     overview_max_size: int = 1800
     dashboard_title: str = "Orthomosaic Tree Damage Dashboard"
     dashboard_refresh_interval_regions: int = 1
+    llm_max_concurrency: int = 4
+    print_llm_output: bool = False
 
     def __post_init__(self) -> None:
         if self.region_size <= 0:
@@ -102,6 +104,8 @@ class OrthomosaicTreeDamageConfig:
             raise ValueError("tree_region_mode 仅支持 heuristic 或 qwen_vl")
         if self.dashboard_refresh_interval_regions <= 0:
             raise ValueError("dashboard_refresh_interval_regions 必须大于 0")
+        if self.llm_max_concurrency <= 0:
+            raise ValueError("llm_max_concurrency 必须大于 0")
 
 
 @dataclass(slots=True, frozen=True)
@@ -944,8 +948,15 @@ async def classify_tree_region(
     if config.tree_region_mode == "qwen_vl" and runner is not None:
         prompt = build_tree_region_prompt(region)
         try:
+            response_text = await runner.run_prompt(prompt, preview)
+            _log_llm_output(
+                enabled=config.print_llm_output,
+                stage="tree_region",
+                item_id=region.region_id,
+                response_text=response_text,
+            )
             parsed = parse_tree_region_response(
-                await runner.run_prompt(prompt, preview),
+                response_text,
                 default_vegetation_fraction=vegetation_fraction,
                 default_texture_score=texture_score,
             )
@@ -985,6 +996,51 @@ async def classify_tree_region(
         texture_score=texture_score,
         tree_coverage=vegetation_fraction,
         reason=reason,
+        processed_at=_now_iso(),
+    )
+
+
+async def _run_damage_tile_detection(
+    *,
+    tile_candidate: TileCandidate,
+    image: np.ndarray,
+    image_path: Path,
+    config: OrthomosaicTreeDamageConfig,
+    runner: ImagePromptRunner,
+    transform: Affine,
+    crs: CRS | None,
+) -> DamageTileResult:
+    prompt = build_tree_damage_prompt(tile_candidate, config.labels)
+    response_text = await runner.run_prompt(prompt, image)
+    _log_llm_output(
+        enabled=config.print_llm_output,
+        stage="damage_tile",
+        item_id=tile_candidate.tile_id,
+        response_text=response_text,
+    )
+    detections = parse_tree_damage_response(
+        response_text=response_text,
+        tile=tile_candidate,
+        min_detection_score=config.min_detection_score,
+        allowed_labels=config.labels,
+    )
+    projected_detections = tuple(
+        project_tile_detection(tile_candidate, detection, transform, crs)
+        for detection in detections
+    )
+    return DamageTileResult(
+        tile_id=tile_candidate.tile_id,
+        region_id=tile_candidate.region_id,
+        row_off=tile_candidate.row_off,
+        col_off=tile_candidate.col_off,
+        width=tile_candidate.width,
+        height=tile_candidate.height,
+        vegetation_fraction=tile_candidate.vegetation_fraction,
+        texture_score=tile_candidate.texture_score,
+        candidate_score=tile_candidate.candidate_score,
+        status="done",
+        image_path=str(image_path),
+        detections=projected_detections,
         processed_at=_now_iso(),
     )
 
@@ -1167,13 +1223,67 @@ async def _process_region_damage_tiles(
     )
 
     completed_tiles = 0
+    in_flight_tasks: set[asyncio.Task[DamageTileResult]] = set()
+
+    def _record_tile_result(result: DamageTileResult) -> None:
+        nonlocal completed_tiles
+        damage_tile_results[result.tile_id] = result
+        append_jsonl(damage_tile_result_path, result.to_dict())
+        completed_tiles += 1
+        _log_tile_progress(
+            region_id=region.region_id,
+            tile_id=result.tile_id,
+            completed_tiles=completed_tiles,
+            total_tiles=total_pending_tiles,
+            status=result.status,
+            detection_count=len(result.detections),
+        )
+
+    async def _drain_in_flight_tasks(*, wait_for_all: bool) -> None:
+        if not in_flight_tasks:
+            return
+
+        done, _ = await asyncio.wait(
+            in_flight_tasks,
+            return_when=asyncio.ALL_COMPLETED if wait_for_all else asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            in_flight_tasks.discard(task)
+
+        first_error: Exception | None = None
+        failed_tile_id: str | None = None
+        for task in done:
+            try:
+                result = task.result()
+            except Exception as exc:  # pragma: no cover - exercised via cancellation path.
+                if first_error is None:
+                    first_error = exc
+                    failed_tile_id = task.get_name()
+                continue
+            _record_tile_result(result)
+
+        if first_error is None:
+            return
+
+        pending_tasks = list(in_flight_tasks)
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+            in_flight_tasks.clear()
+        logger.error(
+            "区域 {} 切片 {} 模型调用失败，已取消剩余 {} 个并发任务",
+            region.region_id,
+            failed_tile_id,
+            len(pending_tasks),
+        )
+        raise first_error
+
     for base_candidate in pending_tile_candidates:
         existing = damage_tile_results.get(base_candidate.tile_id)
 
         tile_candidate = base_candidate
         image_path: Path | None = None
-        result_status = "pending"
-        detection_count = 0
 
         if existing is not None and existing.status == "pending_model":
             tile_candidate = existing.to_tile_candidate()
@@ -1223,18 +1333,7 @@ async def _process_region_damage_tiles(
                     detections=(),
                     processed_at=_now_iso(),
                 )
-                damage_tile_results[result.tile_id] = result
-                append_jsonl(damage_tile_result_path, result.to_dict())
-                result_status = result.status
-                completed_tiles += 1
-                _log_tile_progress(
-                    region_id=region.region_id,
-                    tile_id=result.tile_id,
-                    completed_tiles=completed_tiles,
-                    total_tiles=total_pending_tiles,
-                    status=result_status,
-                    detection_count=detection_count,
-                )
+                _record_tile_result(result)
                 continue
 
             image_path = damage_tiles_dir / f"{tile_candidate.tile_id}.jpg"
@@ -1255,64 +1354,30 @@ async def _process_region_damage_tiles(
                     detections=(),
                     processed_at=_now_iso(),
                 )
-                damage_tile_results[result.tile_id] = result
-                append_jsonl(damage_tile_result_path, result.to_dict())
-                result_status = result.status
-                completed_tiles += 1
-                _log_tile_progress(
-                    region_id=region.region_id,
-                    tile_id=result.tile_id,
-                    completed_tiles=completed_tiles,
-                    total_tiles=total_pending_tiles,
-                    status=result_status,
-                    detection_count=detection_count,
-                )
+                _record_tile_result(result)
                 continue
 
         if runner is None:
             continue
 
         assert image_path is not None
-        prompt = build_tree_damage_prompt(tile_candidate, config.labels)
-        response_text = await runner.run_prompt(prompt, image)
-        detections = parse_tree_damage_response(
-            response_text=response_text,
-            tile=tile_candidate,
-            min_detection_score=config.min_detection_score,
-            allowed_labels=config.labels,
+        task = asyncio.create_task(
+            _run_damage_tile_detection(
+                tile_candidate=tile_candidate,
+                image=image,
+                image_path=image_path,
+                config=config,
+                runner=runner,
+                transform=dataset.transform,
+                crs=dataset.crs,
+            ),
+            name=tile_candidate.tile_id,
         )
-        projected_detections = tuple(
-            project_tile_detection(tile_candidate, detection, dataset.transform, dataset.crs)
-            for detection in detections
-        )
-        result = DamageTileResult(
-            tile_id=tile_candidate.tile_id,
-            region_id=tile_candidate.region_id,
-            row_off=tile_candidate.row_off,
-            col_off=tile_candidate.col_off,
-            width=tile_candidate.width,
-            height=tile_candidate.height,
-            vegetation_fraction=tile_candidate.vegetation_fraction,
-            texture_score=tile_candidate.texture_score,
-            candidate_score=tile_candidate.candidate_score,
-            status="done",
-            image_path=str(image_path),
-            detections=projected_detections,
-            processed_at=_now_iso(),
-        )
-        damage_tile_results[result.tile_id] = result
-        append_jsonl(damage_tile_result_path, result.to_dict())
-        result_status = result.status
-        detection_count = len(projected_detections)
-        completed_tiles += 1
-        _log_tile_progress(
-            region_id=region.region_id,
-            tile_id=result.tile_id,
-            completed_tiles=completed_tiles,
-            total_tiles=total_pending_tiles,
-            status=result_status,
-            detection_count=detection_count,
-        )
+        in_flight_tasks.add(task)
+        if len(in_flight_tasks) >= config.llm_max_concurrency:
+            await _drain_in_flight_tasks(wait_for_all=False)
+
+    await _drain_in_flight_tasks(wait_for_all=True)
 
     logger.info(
         "区域 {} 损伤切片处理完成: processed_tiles={} total_tiles={}",
@@ -1663,6 +1728,18 @@ def _load_saved_image(path: Path) -> np.ndarray | None:
     if not path.exists():
         return None
     return np.asarray(Image.open(path).convert("RGB"))
+
+
+def _log_llm_output(
+    *,
+    enabled: bool,
+    stage: str,
+    item_id: str,
+    response_text: str,
+) -> None:
+    if not enabled:
+        return
+    logger.info("大模型输出 stage={} item_id={}\n{}", stage, item_id, response_text)
 
 
 def _score_vegetation_texture(image: np.ndarray) -> tuple[float, float]:

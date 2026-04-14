@@ -139,6 +139,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=720.0,
         help="接口超时秒数",
     )
+    parser.add_argument(
+        "--llm-max-concurrency",
+        type=int,
+        default=4,
+        help="多模态模型并发请求数，默认 4",
+    )
+    parser.add_argument(
+        "--print-llm-output",
+        action="store_true",
+        help="打印大模型原始输出文本",
+    )
     return parser
 
 
@@ -164,6 +175,8 @@ def main() -> None:
         label_studio_image_root_url=args.label_studio_image_root_url,
         overview_max_size=args.overview_max_size,
         dashboard_refresh_interval_regions=args.dashboard_refresh_interval_regions,
+        llm_max_concurrency=args.llm_max_concurrency,
+        print_llm_output=args.print_llm_output,
     )
 
     runner = None

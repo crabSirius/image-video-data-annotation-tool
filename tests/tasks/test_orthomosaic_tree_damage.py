@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
+import src.tasks.orthomosaic_tree_damage as orthomosaic_tree_damage
 from src.tasks.orthomosaic_tree_damage import (
     OrthomosaicTreeDamageConfig,
     RegionCandidate,
@@ -232,6 +234,82 @@ def test_run_pipeline_sync_exports_dashboard_and_state(tmp_path: Path) -> None:
     assert dashboard_data["overview_image"]["height"] <= 384
     assert len(dashboard_data["regions"]) == 4
     assert dashboard_data["detections"]
+
+
+def test_log_llm_output_emits_raw_response_when_enabled(monkeypatch: object) -> None:
+    logged_messages: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_info(*args: object, **kwargs: object) -> None:
+        logged_messages.append((args, kwargs))
+
+    monkeypatch.setattr(orthomosaic_tree_damage.logger, "info", fake_info)
+
+    orthomosaic_tree_damage._log_llm_output(
+        enabled=True,
+        stage="damage_tile",
+        item_id="region_00001_tile_0001",
+        response_text='{"detections":[]}',
+    )
+
+    assert len(logged_messages) == 1
+    args, kwargs = logged_messages[0]
+    assert kwargs == {}
+    assert args == (
+        "大模型输出 stage={} item_id={}\n{}",
+        "damage_tile",
+        "region_00001_tile_0001",
+        '{"detections":[]}',
+    )
+
+
+def test_run_pipeline_sync_limits_llm_parallelism_to_configured_value(tmp_path: Path) -> None:
+    orthomosaic_path = tmp_path / "sample_parallel.tif"
+    output_dir = tmp_path / "outputs_parallel"
+    _write_sample_orthomosaic(orthomosaic_path)
+
+    class ParallelTrackingRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.active_calls = 0
+            self.max_active_calls = 0
+
+        async def run_prompt(self, prompt: str, image: np.ndarray) -> str:
+            del prompt, image
+            self.calls += 1
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            await asyncio.sleep(0.01)
+            self.active_calls -= 1
+            return json.dumps(
+                {
+                    "detections": [
+                        {
+                            "label": "fallen_tree",
+                            "score": 0.91,
+                            "bbox": [16, 20, 48, 56],
+                            "reason": "疑似大面积倒伏",
+                        }
+                    ]
+                }
+            )
+
+    runner = ParallelTrackingRunner()
+    run_pipeline_sync(
+        config=OrthomosaicTreeDamageConfig(
+            orthomosaic_path=orthomosaic_path,
+            output_dir=output_dir,
+            region_size=192,
+            region_overlap=0,
+            tile_size=96,
+            overlap=0,
+            tree_region_mode="heuristic",
+            llm_max_concurrency=4,
+        ),
+        runner=runner,
+    )
+
+    assert runner.calls == 8
+    assert runner.max_active_calls == 4
 
 
 def test_resume_skips_completed_regions(tmp_path: Path) -> None:
