@@ -1,0 +1,39 @@
+{
+    "makefile.configureOnOpen": false,
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}",
+    ],
+    "python.analysis.exclude": [
+        "tests/*",
+        ".venv/*",
+   ],
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.autoSearchPaths": true,
+    "python.analysis.importFormat": "relative",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    
+    
+    // 启用终端颜色支持
+    "terminal.integrated.enableBold": true,
+    "terminal.integrated.fontWeight": "normal",
+    "terminal.integrated.fontWeightBold": "bold",
+    "python.languageServer": "None",
+    "terminal.integrated.env.linux": {
+        "PYTHONPATH": "${workspaceFolder}"
+    },
+    "cursorpyright.analysis.autoImportCompletions": true,
+    "cursorpyright.analysis.autoSearchPaths": true,
+    "cursorpyright.analysis.diagnosticMode": "workspace",
+    "cursorpyright.analysis.exclude": [
+        "alembic/*",
+        "tests/*",
+        ".venv/*"
+    ],
+    "cursorpyright.analysis.extraPaths": [
+        "${workspaceFolder}"
+    ],
+    "cursorpyright.analysis.typeCheckingMode": "basic",
+    "chatgpt.commentCodeLensEnabled": true,
+}
