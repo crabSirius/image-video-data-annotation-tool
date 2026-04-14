@@ -1482,11 +1482,31 @@ def _score_vegetation_texture(image: np.ndarray) -> tuple[float, float]:
     green = rgb[:, :, 1]
     blue = rgb[:, :, 2]
 
-    vegetation_mask = (green > 0.16) & ((green - red) > 0.03) & ((green - blue) > 0.02)
+    # 明亮区域：绝对阈值检测
+    lit_mask = (green > 0.16) & ((green - red) > 0.03) & ((green - blue) > 0.02)
+
+    # 阴影区域：用归一化绿色比例检测（亮度低但绿色相对占比仍高）
+    total = red + green + blue + 1e-6
+    green_ratio = green / total
+    shadow_mask = (
+        (green_ratio > 0.38)
+        & ((green - red) > 0.01)
+        & (green > 0.04)
+        & (total > 0.06)
+    )
+
+    vegetation_mask = lit_mask | shadow_mask
     vegetation_fraction = float(vegetation_mask.mean())
 
     grayscale = 0.299 * red + 0.587 * green + 0.114 * blue
-    texture_score = min(float(grayscale.std()) * 5.0, 1.0)
+    gray_std = float(grayscale.std())
+    gray_mean = float(grayscale.mean())
+
+    # 明亮区域用标准差，阴影区域用变异系数（对均匀偏暗更宽容）
+    abs_texture = min(gray_std * 5.0, 1.0)
+    cv_texture = min((gray_std / gray_mean) * 2.0, 1.0) if gray_mean > 0.02 else 0.0
+    texture_score = max(abs_texture, cv_texture)
+
     return vegetation_fraction, texture_score
 
 

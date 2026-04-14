@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-tree-region-vegetation-fraction",
         type=float,
-        default=0.3,
+        default=0.4,
         help="粗区域最小植被占比阈值",
     )
     parser.add_argument(
