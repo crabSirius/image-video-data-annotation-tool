@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import cast
 
 type JsonScalar = str | int | float | bool | None
@@ -55,15 +54,63 @@ def _extract_json_from_markdown(text: str) -> str | None:
 
 def _remove_comments_from_json(json_str: str) -> str:
     """移除 JSON 字符串中的单行和多行注释。"""
-    # 移除单行注释 (// 后面的内容)
-    # 注意不匹配字符串内的 // 序列
-    pattern = r"//.*?(?=\n|$)"
-    json_without_line_comments = re.sub(pattern, "", json_str)
+    result: list[str] = []
+    in_string = False
+    escape = False
+    in_line_comment = False
+    in_block_comment = False
+    index = 0
 
-    # 移除多行注释 (/* ... */)
-    # 使用非贪婪模式，避免匹配过多内容
-    pattern = r"/\*.*?\*/"
-    return re.sub(pattern, "", json_without_line_comments, flags=re.DOTALL)
+    while index < len(json_str):
+        char = json_str[index]
+        next_char = json_str[index + 1] if index + 1 < len(json_str) else ""
+
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+                result.append(char)
+            index += 1
+            continue
+
+        if in_block_comment:
+            if char == "*" and next_char == "/":
+                in_block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if in_string:
+            result.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            in_line_comment = True
+            index += 2
+            continue
+
+        if char == "/" and next_char == "*":
+            in_block_comment = True
+            index += 2
+            continue
+
+        result.append(char)
+        index += 1
+
+    return "".join(result)
 
 
 def parse_response_text(text: str) -> JsonValue:

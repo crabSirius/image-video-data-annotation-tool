@@ -1,59 +1,66 @@
 from __future__ import annotations
 
-import sys
-import unittest
-from pathlib import Path
+from dataclasses import dataclass
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+import pytest
 
-from annotation_tool.pipelines.orthomosaic_tree_damage.models import DetectionRecord
-from annotation_tool.utils.geometry import bbox_iou, clip_box, deduplicate_detections
+from src.utils.geometry import bbox_iou, clip_box, deduplicate_detections
 
 
-def _detection(detection_id: str, bbox: tuple[float, float, float, float], score: float) -> DetectionRecord:
-    return DetectionRecord(
-        detection_id=detection_id,
-        raster_path="/tmp/example.tif",
-        tile_id="tile-1",
-        tile_path="/tmp/tile-1.png",
-        candidate_id=f"{detection_id}-candidate",
-        class_name="fallen_tree",
-        score=score,
-        evidence="",
-        tile_bbox=bbox,
-        orig_px_bbox=bbox,
-        geo_bbox=bbox,
-        geo_bbox_wgs84=bbox,
-        source_crs="EPSG:3857",
-        tile_width=1024,
-        tile_height=1024,
-        model_name="demo",
-        prompt_version="v1",
-    )
+@dataclass(frozen=True)
+class Detection:
+    score: float
+    orig_px_bbox: tuple[float, float, float, float]
 
 
-class PostprocessTests(unittest.TestCase):
-    def test_clip_box_clamps_to_image_bounds(self) -> None:
-        assert clip_box((-5, 10, 140, 160), 100, 120) == (0.0, 10, 100.0, 120.0)
+def test_clip_box_clamps_to_image_bounds_and_preserves_valid_order() -> None:
+    clipped = clip_box((-5.0, 3.0, 12.0, 20.0), width=10, height=8)
 
-    def test_bbox_iou_returns_expected_overlap(self) -> None:
-        bbox1 = (0, 0, 10, 10)
-        bbox2 = (5, 5, 15, 15)
-        expected_iou = 25.0 / 175.0
-        assert bbox_iou(bbox1, bbox2) == expected_iou
-        assert bbox_iou(bbox2, bbox1) == expected_iou
-
-    def test_deduplicate_detections_keeps_highest_score(self) -> None:
-        kept = deduplicate_detections(
-            [
-                _detection("low", (10, 10, 40, 40), 0.4),
-                _detection("high", (12, 12, 42, 42), 0.8),
-                _detection("separate", (200, 200, 240, 240), 0.7),
-            ],
-            iou_threshold=0.5,
-        )
-        assert [item.detection_id for item in kept] == ["high", "separate"]
+    assert clipped == (0.0, 3.0, 10.0, 8.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_clip_box_swaps_inverted_coordinates_after_clamping() -> None:
+    clipped = clip_box((9.0, 7.0, 2.0, -2.0), width=6, height=5)
+
+    assert clipped == (2.0, 0.0, 6.0, 5.0)
+
+
+def test_bbox_iou_returns_expected_overlap_ratio() -> None:
+    iou = bbox_iou((0.0, 0.0, 10.0, 10.0), (5.0, 5.0, 15.0, 15.0))
+
+    assert iou == pytest.approx(25.0 / 175.0)
+
+
+def test_bbox_iou_returns_zero_for_non_overlapping_boxes() -> None:
+    assert bbox_iou((0.0, 0.0, 1.0, 1.0), (2.0, 2.0, 3.0, 3.0)) == 0.0
+
+
+def test_deduplicate_detections_keeps_highest_score_when_boxes_overlap() -> None:
+    detections = [
+        Detection(score=0.6, orig_px_bbox=(0.0, 0.0, 10.0, 10.0)),
+        Detection(score=0.9, orig_px_bbox=(1.0, 1.0, 9.0, 9.0)),
+        Detection(score=0.8, orig_px_bbox=(20.0, 20.0, 30.0, 30.0)),
+    ]
+
+    kept = deduplicate_detections(detections, iou_threshold=0.5)
+
+    assert kept == [
+        Detection(score=0.9, orig_px_bbox=(1.0, 1.0, 9.0, 9.0)),
+        Detection(score=0.8, orig_px_bbox=(20.0, 20.0, 30.0, 30.0)),
+    ]
+
+
+def test_deduplicate_detections_keeps_boxes_below_threshold_in_score_order() -> None:
+    detections = [
+        Detection(score=0.2, orig_px_bbox=(0.0, 0.0, 10.0, 10.0)),
+        Detection(score=0.7, orig_px_bbox=(5.0, 5.0, 15.0, 15.0)),
+        Detection(score=0.5, orig_px_bbox=(30.0, 30.0, 40.0, 40.0)),
+    ]
+
+    kept = deduplicate_detections(detections, iou_threshold=0.6)
+
+    assert kept == [
+        Detection(score=0.7, orig_px_bbox=(5.0, 5.0, 15.0, 15.0)),
+        Detection(score=0.5, orig_px_bbox=(30.0, 30.0, 40.0, 40.0)),
+        Detection(score=0.2, orig_px_bbox=(0.0, 0.0, 10.0, 10.0)),
+    ]
