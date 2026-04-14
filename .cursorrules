@@ -186,3 +186,4 @@ Closes #123
 
 
 注意：默认不要生成测试代码，除非有明确的需求。
+git commit message 使用中文。

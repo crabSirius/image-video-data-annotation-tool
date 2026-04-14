@@ -11,8 +11,10 @@ def build_dashboard_payload(
     title: str,
     orthomosaic_path: str,
     overview_image_name: str,
-    image_width: int,
-    image_height: int,
+    source_image_width: int,
+    source_image_height: int,
+    overview_width: int,
+    overview_height: int,
     summary: dict[str, object],
     regions: list[dict[str, object]],
     detections: list[dict[str, object]],
@@ -21,7 +23,8 @@ def build_dashboard_payload(
         "title": title,
         "orthomosaic_path": orthomosaic_path,
         "overview_image_name": overview_image_name,
-        "image": {"width": image_width, "height": image_height},
+        "source_image": {"width": source_image_width, "height": source_image_height},
+        "overview_image": {"width": overview_width, "height": overview_height},
         "summary": summary,
         "regions": regions,
         "detections": detections,
@@ -206,11 +209,16 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       flex: 1;
       overflow: auto;
       padding: 14px 22px 22px;
+      cursor: grab;
+      user-select: none;
+    }
+
+    .map-shell.dragging {
+      cursor: grabbing;
     }
 
     .scene {
       position: relative;
-      transform-origin: top left;
       margin: 0 auto;
       box-shadow: 0 20px 50px rgba(24, 32, 38, 0.16);
       border-radius: 18px;
@@ -262,6 +270,23 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       padding: 2px 4px;
       line-height: 1.1;
       pointer-events: none;
+    }
+
+    .region-label {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #111827;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1;
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 2px 10px rgba(24, 32, 38, 0.16);
     }
 
     .sidebar {
@@ -317,6 +342,58 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       line-height: 1.6;
     }
 
+    .filter-controls {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .filter-input {
+      width: 100%;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--ink);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .filter-input:focus {
+      border-color: rgba(24, 32, 38, 0.35);
+      box-shadow: 0 0 0 4px rgba(24, 32, 38, 0.08);
+    }
+
+    .filter-actions,
+    .filter-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .filter-button,
+    .filter-chip {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .filter-chip.active {
+      background: rgba(24, 32, 38, 0.92);
+      color: white;
+      border-color: rgba(24, 32, 38, 0.92);
+    }
+
+    .filter-meta {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
     @media (max-width: 1200px) {
       .layout {
         grid-template-columns: 1fr;
@@ -358,6 +435,28 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
     <aside class="panel sidebar">
       <div class="detail-card">
+        <h2>区域筛选</h2>
+        <div class="filter-controls">
+          <input
+            id="region-search"
+            class="filter-input"
+            type="text"
+            placeholder="输入区域编号，例如 region_00012"
+          >
+          <div class="filter-chips">
+            <button type="button" class="filter-chip" data-filter="pending">只看未处理</button>
+            <button type="button" class="filter-chip" data-filter="tree">只看树木区</button>
+            <button type="button" class="filter-chip" data-filter="positive">只看已发现异常</button>
+          </div>
+          <div class="filter-actions">
+            <button type="button" id="focus-first-match" class="filter-button">定位首个匹配区域</button>
+            <button type="button" id="clear-filters" class="filter-button">清空筛选</button>
+          </div>
+          <div class="filter-meta" id="filter-meta">当前显示全部区域。</div>
+        </div>
+      </div>
+
+      <div class="detail-card">
         <h2>区域详情</h2>
         <p class="hint" id="selection-hint">点击左侧任意区域，查看该区域的树木判定与异常检测进度。</p>
         <div class="detail-grid" id="detail-grid"></div>
@@ -375,7 +474,22 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
   <script>
     const DASHBOARD = __DASHBOARD_DATA__;
-    const zoomState = { value: 1 };
+    const zoomState = { baseScale: 1, userScale: 1 };
+    const filterState = {
+      query: "",
+      pendingOnly: false,
+      treeOnly: false,
+      positiveOnly: false,
+    };
+    const dragState = {
+      active: false,
+      moved: false,
+      startX: 0,
+      startY: 0,
+      startScrollLeft: 0,
+      startScrollTop: 0,
+      suppressClickUntil: 0,
+    };
     let selectedRegionId = null;
 
     const titleElement = document.getElementById("title");
@@ -387,8 +501,14 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     const regionLayerElement = document.getElementById("region-layer");
     const detectionLayerElement = document.getElementById("detection-layer");
     const sceneElement = document.getElementById("scene");
+    const mapShellElement = document.getElementById("map-shell");
     const overviewImageElement = document.getElementById("overview-image");
     const detectionToggleElement = document.getElementById("toggle-detections");
+    const regionSearchElement = document.getElementById("region-search");
+    const filterMetaElement = document.getElementById("filter-meta");
+    const filterChipElements = Array.from(document.querySelectorAll(".filter-chip"));
+    const focusFirstMatchElement = document.getElementById("focus-first-match");
+    const clearFiltersElement = document.getElementById("clear-filters");
 
     const legendItems = [
       { label: "未处理", status: "pending" },
@@ -428,13 +548,101 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       return "pending";
     }
 
+    function isPendingRegion(region) {
+      return region.dashboard_status === "pending";
+    }
+
+    function isTreeRegion(region) {
+      return region.tree_presence === true;
+    }
+
+    function isPositiveRegion(region) {
+      return Number(region.detection_count || 0) > 0;
+    }
+
+    function matchesFilters(region) {
+      const query = filterState.query.trim().toLowerCase();
+      if (query && !String(region.region_id).toLowerCase().includes(query)) {
+        return false;
+      }
+
+      const enabledPredicates = [];
+      if (filterState.pendingOnly) {
+        enabledPredicates.push(isPendingRegion(region));
+      }
+      if (filterState.treeOnly) {
+        enabledPredicates.push(isTreeRegion(region));
+      }
+      if (filterState.positiveOnly) {
+        enabledPredicates.push(isPositiveRegion(region));
+      }
+
+      if (!enabledPredicates.length) {
+        return true;
+      }
+      return enabledPredicates.some(Boolean);
+    }
+
+    function getVisibleRegions() {
+      return DASHBOARD.regions.filter(matchesFilters);
+    }
+
+    function shouldShowRegionLabels(region, visibleRegionCount) {
+      const renderedWidth =
+        sceneElement.clientWidth * (Number(region.width) / DASHBOARD.source_image.width);
+      const renderedHeight =
+        sceneElement.clientHeight * (Number(region.height) / DASHBOARD.source_image.height);
+      const showByQuery = filterState.query.trim().length > 0;
+      const showByCount = visibleRegionCount <= 24;
+      const showByGlobalView = zoomState.userScale <= 1.05 && visibleRegionCount <= 80;
+      return (
+        (showByQuery || showByCount || showByGlobalView || region.region_id === selectedRegionId) &&
+        renderedWidth >= 42 &&
+        renderedHeight >= 18
+      );
+    }
+
+    function renderFilterMeta() {
+      const visibleCount = getVisibleRegions().length;
+      const totalCount = DASHBOARD.regions.length;
+      const activeTags = [];
+      if (filterState.query.trim()) {
+        activeTags.push(`编号包含 "${filterState.query.trim()}"`);
+      }
+      if (filterState.pendingOnly) {
+        activeTags.push("未处理");
+      }
+      if (filterState.treeOnly) {
+        activeTags.push("树木区");
+      }
+      if (filterState.positiveOnly) {
+        activeTags.push("已发现异常");
+      }
+
+      if (!activeTags.length) {
+        filterMetaElement.textContent = `当前显示全部区域，共 ${totalCount} 个。`;
+        return;
+      }
+
+      filterMetaElement.textContent =
+        `当前显示 ${visibleCount} / ${totalCount} 个区域，筛选条件：${activeTags.join("、")}。`;
+    }
+
+    function updateFilterChips() {
+      for (const chip of filterChipElements) {
+        const key = chip.dataset.filter;
+        const active =
+          (key === "pending" && filterState.pendingOnly) ||
+          (key === "tree" && filterState.treeOnly) ||
+          (key === "positive" && filterState.positiveOnly);
+        chip.classList.toggle("active", active);
+      }
+    }
+
     function renderHeader() {
       titleElement.textContent = DASHBOARD.title;
       subtitleElement.textContent = DASHBOARD.orthomosaic_path;
       overviewImageElement.src = DASHBOARD.overview_image_name;
-      overviewImageElement.width = DASHBOARD.image.width;
-      overviewImageElement.height = DASHBOARD.image.height;
-      sceneElement.style.width = `${DASHBOARD.image.width}px`;
     }
 
     function renderStats() {
@@ -459,24 +667,37 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
     function renderRegions() {
       regionLayerElement.innerHTML = "";
-      for (const region of DASHBOARD.regions) {
+      const visibleRegions = getVisibleRegions();
+      for (const region of visibleRegions) {
         const element = document.createElement("div");
         element.className = `region ${regionStatus(region)}`;
         if (region.region_id === selectedRegionId) {
           element.classList.add("selected");
         }
-        element.style.left = pct(region.col_off, DASHBOARD.image.width);
-        element.style.top = pct(region.row_off, DASHBOARD.image.height);
-        element.style.width = pct(region.width, DASHBOARD.image.width);
-        element.style.height = pct(region.height, DASHBOARD.image.height);
+        element.style.left = pct(region.col_off, DASHBOARD.source_image.width);
+        element.style.top = pct(region.row_off, DASHBOARD.source_image.height);
+        element.style.width = pct(region.width, DASHBOARD.source_image.width);
+        element.style.height = pct(region.height, DASHBOARD.source_image.height);
         element.title = `${region.region_id} | ${regionStatus(region)}`;
         element.addEventListener("click", () => {
+          if (Date.now() < dragState.suppressClickUntil) {
+            return;
+          }
           selectedRegionId = region.region_id;
           renderRegions();
           renderDetails();
+          focusRegion(region, { minUserScale: 1.8 });
         });
+
+        if (shouldShowRegionLabels(region, visibleRegions.length)) {
+          const label = document.createElement("span");
+          label.className = "region-label";
+          label.textContent = region.region_id.replace("region_", "R");
+          element.appendChild(label);
+        }
         regionLayerElement.appendChild(element);
       }
+      renderFilterMeta();
     }
 
     function renderDetections() {
@@ -489,10 +710,10 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
         const [x0, y0, x1, y1] = detection.orig_px_bbox;
         const element = document.createElement("div");
         element.className = "detection";
-        element.style.left = pct(x0, DASHBOARD.image.width);
-        element.style.top = pct(y0, DASHBOARD.image.height);
-        element.style.width = pct(x1 - x0, DASHBOARD.image.width);
-        element.style.height = pct(y1 - y0, DASHBOARD.image.height);
+        element.style.left = pct(x0, DASHBOARD.source_image.width);
+        element.style.top = pct(y0, DASHBOARD.source_image.height);
+        element.style.width = pct(x1 - x0, DASHBOARD.source_image.width);
+        element.style.height = pct(y1 - y0, DASHBOARD.source_image.height);
         element.textContent = `${detection.label} ${Number(detection.score).toFixed(2)}`;
         detectionLayerElement.appendChild(element);
       }
@@ -528,33 +749,177 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     }
 
     function applyZoom() {
-      sceneElement.style.transform = `scale(${zoomState.value})`;
+      const scale = zoomState.baseScale * zoomState.userScale;
+      const width = Math.max(120, DASHBOARD.overview_image.width * scale);
+      const height = Math.max(120, DASHBOARD.overview_image.height * scale);
+      sceneElement.style.width = `${width}px`;
+      sceneElement.style.height = `${height}px`;
+      overviewImageElement.style.width = `${width}px`;
+      overviewImageElement.style.height = `${height}px`;
+      renderRegions();
+    }
+
+    function fitToViewport() {
+      const widthScale = Math.max(
+        0.05,
+        (mapShellElement.clientWidth - 16) / DASHBOARD.overview_image.width
+      );
+      const heightScale = Math.max(
+        0.05,
+        (mapShellElement.clientHeight - 16) / DASHBOARD.overview_image.height
+      );
+      zoomState.baseScale = Math.min(widthScale, heightScale, 1);
+      applyZoom();
+    }
+
+    function centerOnSourcePoint(sourceX, sourceY) {
+      const scaleX = sceneElement.clientWidth / DASHBOARD.source_image.width;
+      const scaleY = sceneElement.clientHeight / DASHBOARD.source_image.height;
+      const targetX = sourceX * scaleX;
+      const targetY = sourceY * scaleY;
+      mapShellElement.scrollLeft = Math.max(0, targetX - mapShellElement.clientWidth / 2);
+      mapShellElement.scrollTop = Math.max(0, targetY - mapShellElement.clientHeight / 2);
+    }
+
+    function focusRegion(region, options = {}) {
+      const regionOverviewWidth =
+        (Number(region.width) / DASHBOARD.source_image.width) * DASHBOARD.overview_image.width;
+      const regionOverviewHeight =
+        (Number(region.height) / DASHBOARD.source_image.height) * DASHBOARD.overview_image.height;
+      const desiredWidthScale =
+        (mapShellElement.clientWidth * 0.58) / Math.max(regionOverviewWidth, 1);
+      const desiredHeightScale =
+        (mapShellElement.clientHeight * 0.58) / Math.max(regionOverviewHeight, 1);
+      const desiredAbsoluteScale = Math.min(desiredWidthScale, desiredHeightScale);
+      const minUserScale = options.minUserScale || 1;
+      zoomState.userScale = Math.min(
+        6,
+        Math.max(minUserScale, desiredAbsoluteScale / Math.max(zoomState.baseScale, 0.001))
+      );
+      applyZoom();
+      requestAnimationFrame(() => {
+        centerOnSourcePoint(
+          Number(region.col_off) + Number(region.width) / 2,
+          Number(region.row_off) + Number(region.height) / 2
+        );
+      });
+    }
+
+    function focusFirstMatchingRegion() {
+      const firstRegion = getVisibleRegions()[0];
+      if (!firstRegion) {
+        return;
+      }
+      selectedRegionId = firstRegion.region_id;
+      renderDetails();
+      focusRegion(firstRegion, { minUserScale: 1.4 });
     }
 
     document.getElementById("zoom-in").addEventListener("click", () => {
-      zoomState.value = Math.min(zoomState.value + 0.2, 4);
+      zoomState.userScale = Math.min(zoomState.userScale + 0.2, 6);
       applyZoom();
     });
 
     document.getElementById("zoom-out").addEventListener("click", () => {
-      zoomState.value = Math.max(zoomState.value - 0.2, 0.4);
+      zoomState.userScale = Math.max(zoomState.userScale - 0.2, 0.2);
       applyZoom();
     });
 
     document.getElementById("zoom-reset").addEventListener("click", () => {
-      zoomState.value = 1;
-      applyZoom();
+      zoomState.userScale = 1;
+      fitToViewport();
+    });
+
+    regionSearchElement.addEventListener("input", (event) => {
+      filterState.query = event.target.value;
+      renderRegions();
+    });
+
+    for (const chip of filterChipElements) {
+      chip.addEventListener("click", () => {
+        const key = chip.dataset.filter;
+        if (key === "pending") {
+          filterState.pendingOnly = !filterState.pendingOnly;
+        } else if (key === "tree") {
+          filterState.treeOnly = !filterState.treeOnly;
+        } else if (key === "positive") {
+          filterState.positiveOnly = !filterState.positiveOnly;
+        }
+        updateFilterChips();
+        renderRegions();
+      });
+    }
+
+    focusFirstMatchElement.addEventListener("click", () => {
+      focusFirstMatchingRegion();
+      renderRegions();
+    });
+
+    clearFiltersElement.addEventListener("click", () => {
+      filterState.query = "";
+      filterState.pendingOnly = false;
+      filterState.treeOnly = false;
+      filterState.positiveOnly = false;
+      regionSearchElement.value = "";
+      updateFilterChips();
+      renderRegions();
+    });
+
+    mapShellElement.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      dragState.active = true;
+      dragState.moved = false;
+      dragState.startX = event.clientX;
+      dragState.startY = event.clientY;
+      dragState.startScrollLeft = mapShellElement.scrollLeft;
+      dragState.startScrollTop = mapShellElement.scrollTop;
+      mapShellElement.classList.add("dragging");
+    });
+
+    window.addEventListener("mousemove", (event) => {
+      if (!dragState.active) {
+        return;
+      }
+      const deltaX = event.clientX - dragState.startX;
+      const deltaY = event.clientY - dragState.startY;
+      if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
+        dragState.moved = true;
+      }
+      mapShellElement.scrollLeft = dragState.startScrollLeft - deltaX;
+      mapShellElement.scrollTop = dragState.startScrollTop - deltaY;
+    });
+
+    window.addEventListener("mouseup", () => {
+      if (!dragState.active) {
+        return;
+      }
+      dragState.active = false;
+      mapShellElement.classList.remove("dragging");
+      if (dragState.moved) {
+        dragState.suppressClickUntil = Date.now() + 120;
+      }
+    });
+
+    mapShellElement.addEventListener("mouseleave", () => {
+      if (!dragState.active) {
+        return;
+      }
+      mapShellElement.classList.remove("dragging");
     });
 
     detectionToggleElement.addEventListener("change", renderDetections);
+    window.addEventListener("resize", fitToViewport);
 
     renderHeader();
     renderStats();
     renderLegend();
+    updateFilterChips();
     renderRegions();
     renderDetections();
     renderDetails();
-    applyZoom();
+    fitToViewport();
   </script>
 </body>
 </html>

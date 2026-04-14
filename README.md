@@ -33,8 +33,15 @@
 
 ```bash
 uv run python scripts/run_orthomosaic_tree_damage.py \
-  --orthomosaic /path/to/orthomosaic.tif \
-  --output-dir /path/to/output
+  --input-path datas/正射图/giuhua_cog_9.1.tif \
+  --output-dir outputs
+```
+
+```bash
+uv run python scripts/run_orthomosaic_tree_damage.py \
+  --input-path datas/正射图/giuhua_cog_9.1.tif \
+  --output-dir outputs \
+  --max-regions 1
 ```
 
 常用参数：
