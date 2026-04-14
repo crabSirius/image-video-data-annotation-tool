@@ -595,7 +595,8 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
             <button type="button" class="filter-chip" data-filter="positive">只看已发现异常</button>
           </div>
           <div class="filter-actions">
-            <button type="button" id="focus-first-match" class="filter-button">定位首个匹配区域</button>
+            <button type="button" id="focus-first-match" class="filter-button">定位首个匹配</button>
+            <button type="button" id="focus-next-match" class="filter-button">下一匹配区域</button>
             <button type="button" id="clear-filters" class="filter-button">清空筛选</button>
           </div>
           <div class="filter-meta" id="filter-meta">当前显示全部区域。</div>
@@ -970,28 +971,24 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       const dets = getRegionDetections(region);
       if (!dets.length) return;
 
-      const imgW = img.naturalWidth;
-      const imgH = img.naturalHeight;
       const regionW = Number(region.width);
       const regionH = Number(region.height);
-      const scaleX = imgW / regionW;
-      const scaleY = imgH / regionH;
       const rColOff = Number(region.col_off);
       const rRowOff = Number(region.row_off);
 
       for (const det of dets) {
         const [ox0, oy0, ox1, oy1] = det.orig_px_bbox;
-        const lx = (ox0 - rColOff) * scaleX;
-        const ly = (oy0 - rRowOff) * scaleY;
-        const bw = (ox1 - ox0) * scaleX;
-        const bh = (oy1 - oy0) * scaleY;
+        const leftPct = ((ox0 - rColOff) / regionW) * 100;
+        const topPct = ((oy0 - rRowOff) / regionH) * 100;
+        const widthPct = ((ox1 - ox0) / regionW) * 100;
+        const heightPct = ((oy1 - oy0) / regionH) * 100;
 
         const box = document.createElement("div");
         box.className = "region-det-box";
-        box.style.left = `${lx}px`;
-        box.style.top = `${ly}px`;
-        box.style.width = `${bw}px`;
-        box.style.height = `${bh}px`;
+        box.style.left = `${leftPct}%`;
+        box.style.top = `${topPct}%`;
+        box.style.width = `${widthPct}%`;
+        box.style.height = `${heightPct}%`;
 
         const label = document.createElement("span");
         label.className = "region-det-label";
@@ -1094,13 +1091,21 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     }
 
     function focusFirstMatchingRegion() {
-      const firstRegion = getVisibleRegions()[0];
-      if (!firstRegion) {
-        return;
-      }
-      selectedRegionId = firstRegion.region_id;
+      const visible = getVisibleRegions();
+      if (!visible.length) return;
+      selectedRegionId = visible[0].region_id;
       renderDetails();
-      focusRegion(firstRegion, { minUserScale: 1.4 });
+      focusRegion(visible[0], { minUserScale: 1.4 });
+    }
+
+    function focusNextMatchingRegion() {
+      const visible = getVisibleRegions();
+      if (!visible.length) return;
+      const currentIdx = visible.findIndex((r) => r.region_id === selectedRegionId);
+      const nextIdx = (currentIdx + 1) % visible.length;
+      selectedRegionId = visible[nextIdx].region_id;
+      renderDetails();
+      focusRegion(visible[nextIdx], { minUserScale: 1.4 });
     }
 
     document.getElementById("zoom-in").addEventListener("click", () => {
@@ -1126,7 +1131,13 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     regionSearchElement.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        focusFirstMatchingRegion();
+        const visible = getVisibleRegions();
+        const alreadyInVisible = visible.some((r) => r.region_id === selectedRegionId);
+        if (alreadyInVisible) {
+          focusNextMatchingRegion();
+        } else {
+          focusFirstMatchingRegion();
+        }
         renderRegions();
       }
     });
@@ -1148,6 +1159,11 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
     focusFirstMatchElement.addEventListener("click", () => {
       focusFirstMatchingRegion();
+      renderRegions();
+    });
+
+    document.getElementById("focus-next-match").addEventListener("click", () => {
+      focusNextMatchingRegion();
       renderRegions();
     });
 
