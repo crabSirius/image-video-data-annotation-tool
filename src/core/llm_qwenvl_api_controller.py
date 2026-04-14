@@ -1,14 +1,17 @@
+from __future__ import annotations
+
 import base64
 import json
 import logging
 import time
 from io import BytesIO
+from typing import Any
 
 import cv2
 import httpx
 import numpy as np
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from tenacity import (
     before_sleep_log,
     retry,
@@ -19,165 +22,151 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
-# TODO 需要兼容https， 使用self.client.request的方式
-
-# todo 。传入视频 URL 时：Qwen2.5-VL 系列模型支持传入的视频大小不超过1 GB，其他模型不超过150MB。
-# todo 。传入本地文件时：使用 OpenAI SDK 方式经 Base64编码后的视频需小于 10MB；使用 DashScope SDK 方式，视频本身需小于 100MB
-# todo 。可以考虑使用rsync同步视频，再调用API
 
 class QwenVLAPIControllerConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    scheme: str = "http"
     host: str = "localhost"
     port: int | None = 3001
+    api_path: str = "/v1/chat/completions"
     model_name: str = "Qwen/Qwen2.5-VL-32B-Instruct"
+    api_key: str | None = None
+    request_headers: dict[str, str] = Field(default_factory=dict)
+    request_timeout_seconds: float = 720.0
     video_extract_fps: int = 1
     video_max_frame_count: int = 60
-
-    class Config:
-        extra = "ignore"
+    temperature: float = 0.1
+    top_p: float = 0.95
 
 
 class QwenVLAPIController:
-    def __init__(
-        self,
-        config: QwenVLAPIControllerConfig,
-    ) -> None:
+    def __init__(self, config: QwenVLAPIControllerConfig) -> None:
+        self.scheme = config.scheme.lower()
         self.host = config.host
         self.port = config.port
+        self.api_path = config.api_path
         self.model_name = config.model_name
+        self.api_key = config.api_key
+        self.request_headers = dict(config.request_headers)
+        self.request_timeout_seconds = config.request_timeout_seconds
         self.video_extract_fps = config.video_extract_fps
         self.video_max_frame_count = config.video_max_frame_count
-    
+        self.temperature = config.temperature
+        self.top_p = config.top_p
+
     @staticmethod
     def _transform_image_base64(image: np.ndarray) -> str:
-        """
-        将numpy数组转换为base64字符串
-        """
-        # 将BGR转换为RGB
+        """将 numpy 图像转换为 base64 JPEG。"""
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(image_rgb)
         output_buffer = BytesIO()
-        pil_image.save(output_buffer, format="jpeg")
+        pil_image.save(output_buffer, format="JPEG")
         return base64.b64encode(output_buffer.getvalue()).decode("utf-8")
-    
+
+    def _build_base_url(self) -> str:
+        if self.port in (None, 0):
+            return f"{self.scheme}://{self.host}"
+        return f"{self.scheme}://{self.host}:{self.port}"
+
+    def _build_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        headers.update(self.request_headers)
+        if self.api_key and "Authorization" not in headers:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _build_payload(
+        self,
+        messages: list[dict[str, Any]],
+        video_kwargs: dict[str, object] | None,
+    ) -> dict[str, Any]:
+        if video_kwargs:
+            return {
+                "model": self.model_name,
+                "messages": messages,
+                "extra_body": {"mm_processor_kwargs": video_kwargs},
+            }
+
+        return {
+            "model": self.model_name,
+            "messages": messages,
+            "stream": False,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+        }
+
     @retry(
         reraise=True,
         stop=stop_after_attempt(3),
-        wait=wait_exponential(
-            multiplier=1,
-            min=2,
-            max=10
-        ),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(Exception),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    async def _inference_with_api(self, messages: list[dict], video_kwargs: dict | None = None) -> str:
-        """
-        使用VLLM API推理。
-
-        Args:
-            messages: 消息列表
-            video_kwargs: 视频相关参数
-
-        Returns:
-            str: 推理结果
-
-        Raises:
-            httpx.HTTPError: API请求异常
-            json.JSONDecodeError: JSON解析异常
-        """
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer xxxx",
-            "X-HW-AppKey": "9DtHeTHyZeU34+#UzTHBW9k!hJW4TCx4%H.%IGj@rMNyNEY0iJzVgGlEWEu!Lu20",
-            "X-HW-ID": "96ac58bb-0f9e-4e80-abdb-c31b59bffc11",
-            "X-Sdk-Content-Sha256": "UNSIGNED-PAYLOAD",
-        }
-        if video_kwargs:
-            payload = {
-                "model": self.model_name,
-                "messages": messages,
-                "extra_body": {
-                    "mm_processor_kwargs": video_kwargs
-                }
-            }
-        else:
-            payload = {
-                "model": self.model_name,
-                "messages": messages,
-                "stream": False,
-                "temperature": 0.1,
-                "top_p": 0.95,
-            }
+    async def _inference_with_api(
+        self,
+        messages: list[dict[str, Any]],
+        video_kwargs: dict[str, object] | None = None,
+    ) -> str:
+        """调用兼容 OpenAI Chat Completions 的多模态接口。"""
+        payload = self._build_payload(messages, video_kwargs)
+        response: httpx.Response | None = None
 
         try:
-            # with self._api_lock:  # 使用上下文管理器确保锁的正确获取和释放
             start_time = time.time()
-            if self.port in (None, 0):
-                base_url = f"http://{self.host}"
-            else:
-                base_url = f"http://{self.host}:{self.port}"
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{base_url}/v1/chat/completions", # noqa
-                    headers=headers,
+                    f"{self._build_base_url()}{self.api_path}",
+                    headers=self._build_headers(),
                     json=payload,
-                    timeout=720.0  # 添加超时设置
+                    timeout=self.request_timeout_seconds,
                 )
-            end_time = time.time()
-            logging.info(f"VLLM API推理时间: {end_time - start_time} 秒")
-            response.raise_for_status()  # 检查HTTP状态码
-
-            # 记录原始响应
-            logging.debug(f"Raw API response: {response.text}")
+            elapsed = time.time() - start_time
+            logger.info("VLM API 推理时间: %.2f 秒", elapsed)
+            response.raise_for_status()
 
             result = response.json()
             if not result:
-                logging.error("Empty response from API")
                 raise ValueError("Empty response from API")
 
             content = result.get("choices", [{}])[0].get("message", {}).get("content")
             if content:
-                logging.info(f"VLLM API推理成功: {content}")
-                return content
-            logging.error(f"VLLM API返回格式异常: {result}")
-            raise ValueError(f"VLLM API返回格式异常: {result}")
-        except httpx.HTTPError as e:
-            logging.error(f"API请求异常: {str(e)}")
-            raise e
-        except json.JSONDecodeError as e:
-            logging.error(f"JSON解析异常: {str(e)}, 原始响应: {response.text}")
-            raise e
-        except Exception as e:
-            logging.error(f"未预期的异常: {str(e)}")
-            raise e
-            
-    async def inference_image_base64(self, prompt: str, images:list[np.ndarray]) -> str:
+                logger.info("VLM API 推理成功")
+                return str(content)
+
+            raise ValueError(f"VLM API 返回格式异常: {result}")
+        except httpx.HTTPError as exc:
+            logger.error("API 请求异常: %s", exc)
+            raise
+        except json.JSONDecodeError as exc:
+            raw_response = "" if response is None else response.text
+            logger.error("JSON 解析异常: %s, 原始响应: %s", exc, raw_response)
+            raise
+        except Exception as exc:
+            logger.error("未预期的异常: %s", exc)
+            raise
+
+    async def inference_image_base64(self, prompt: str, images: list[np.ndarray]) -> str:
         start_time = time.time()
         base64_frames = [self._transform_image_base64(image) for image in images]
-        messages = [
+        messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
+                "content": [{"type": "text", "text": prompt}],
             },
             {
                 "role": "user",
-                "content": [
-                ]
-            }
+                "content": [],
+            },
         ]
         for base64_frame in base64_frames:
-            messages[1]["content"].append({
-                "type": "image_url",
-                "image_url": {
-                        "url": f"data:image/jpeg;base64,{base64_frame}"
-                    }
-                })
+            messages[1]["content"].append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{base64_frame}"},
+                }
+            )
         result = await self._inference_with_api(messages)
-        end_time = time.time()
-        logging.info(f"推理执行时间: {end_time - start_time} 秒")
+        elapsed = time.time() - start_time
+        logger.info("推理执行时间: %.2f 秒", elapsed)
         return result
