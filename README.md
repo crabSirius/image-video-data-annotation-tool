@@ -91,12 +91,34 @@ uv run python scripts/run_orthomosaic_tree_damage.py \
 - `damage_tiles/`: 导出的细粒度检测 tile JPG 文件。
 - `state/`: 断点继续所需的内部事件日志。
 
+## Dashboard 查看服务
+
+pipeline 运行后会在 `dashboard/` 子目录生成静态 HTML 页面。如需**查看单个区域的原始 TIFF 切片**（支持多分辨率），可启动本地查看服务：
+
+```bash
+uv run python scripts/serve_orthomosaic_dashboard.py \
+  --output-dir outputs \
+  --port 8765
+```
+
+浏览器打开 `http://localhost:8765` 即可使用。`--output-dir` 可以指向 pipeline 输出根目录（如 `outputs`）或 `outputs/dashboard`，脚本会自动定位 `dashboard_data.json`。
+
+主要功能：
+
+- 在地图上点击任意区域 → 右侧显示区域详情。
+- 点击 **"查看区域原图"** → 弹窗从原始 GeoTIFF 实时读取该区域窗口，渲染为 JPEG 显示。
+- 弹窗顶部可切换分辨率（`512` / `1024` / `2048` / `原始`），快速浏览用小分辨率，需要细看用大分辨率或原始尺寸。
+
+API 端点：
+
+- `GET /api/region-image?region_id=region_00001&max_size=1024` — 返回指定区域的 JPEG 图像。不传 `max_size` 则返回原始分辨率。如果 GeoTIFF 包含 overviews（如 COG 格式），低分辨率请求会利用内置金字塔加速读取。
+
 ## 推荐工作流
 
 1. 先用 `--tree-region-mode heuristic --dry-run` 快速跑一遍，确认粗粒度 region 尺度和 dashboard 表现是否合理。
 2. 再切到 `--tree-region-mode qwen_vl` 或你自己的树木区域模型，提升树木区域筛选质量。
 3. 接入异常检测模型，继续在同一个 `output-dir` 上重跑，自动续跑未完成区域。
-4. 打开 `dashboard/index.html`，检查全图处理进度和异常分布。
+4. 启动 `serve_orthomosaic_dashboard.py`，在 dashboard 上检查全图处理进度和异常分布，点击区域查看原图确认树木判定是否正确。
 5. 用 `label_studio_tasks.json` 做人工复核，整理训练集。
 
 ## 关于树木区域模型

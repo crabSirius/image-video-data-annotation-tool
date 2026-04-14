@@ -86,7 +86,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     .layout {
       display: grid;
       grid-template-columns: minmax(320px, 1fr) 360px;
-      min-height: 100vh;
+      height: 100vh;
       gap: 20px;
       padding: 20px;
     }
@@ -103,6 +103,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      min-height: 0;
     }
 
     .header {
@@ -240,6 +241,10 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       inset: 0;
     }
 
+    #detection-layer {
+      pointer-events: none;
+    }
+
     .region {
       position: absolute;
       border: 1px solid rgba(24, 32, 38, 0.18);
@@ -294,6 +299,8 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       display: flex;
       flex-direction: column;
       gap: 18px;
+      overflow-y: auto;
+      min-height: 0;
     }
 
     .sidebar h2,
@@ -394,6 +401,117 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       line-height: 1.6;
     }
 
+    .region-modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(0, 0, 0, 0.62);
+      backdrop-filter: blur(6px);
+      justify-content: center;
+      align-items: center;
+    }
+
+    .region-modal-backdrop.open {
+      display: flex;
+    }
+
+    .region-modal {
+      position: relative;
+      max-width: 92vw;
+      max-height: 92vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border-radius: 22px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+    }
+
+    .region-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+    }
+
+    .region-modal-header h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .region-modal-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .region-modal-controls button {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.8);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .region-modal-controls button.active {
+      background: rgba(24, 32, 38, 0.92);
+      color: white;
+      border-color: rgba(24, 32, 38, 0.92);
+    }
+
+    .region-modal-close {
+      border: none;
+      background: none;
+      font-size: 22px;
+      cursor: pointer;
+      color: var(--muted);
+      padding: 4px 8px;
+      line-height: 1;
+    }
+
+    .region-modal-body {
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 200px;
+      padding: 12px;
+    }
+
+    .region-modal-body img {
+      max-width: 100%;
+      max-height: 80vh;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+    }
+
+    .region-modal-body .loading-hint {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .view-region-btn {
+      margin-top: 14px;
+      width: 100%;
+      border: 1px solid var(--border);
+      background: rgba(24, 32, 38, 0.06);
+      color: var(--ink);
+      border-radius: 14px;
+      padding: 10px 14px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 120ms ease;
+    }
+
+    .view-region-btn:hover {
+      background: rgba(24, 32, 38, 0.12);
+    }
+
     @media (max-width: 1200px) {
       .layout {
         grid-template-columns: 1fr;
@@ -470,6 +588,24 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
         </p>
       </div>
     </aside>
+  </div>
+
+  <div class="region-modal-backdrop" id="region-modal-backdrop">
+    <div class="region-modal">
+      <div class="region-modal-header">
+        <h3 id="region-modal-title">区域原图</h3>
+        <div class="region-modal-controls" id="region-modal-controls">
+          <button type="button" data-size="512">512</button>
+          <button type="button" data-size="1024" class="active">1024</button>
+          <button type="button" data-size="2048">2048</button>
+          <button type="button" data-size="full">原始</button>
+        </div>
+        <button class="region-modal-close" id="region-modal-close">&times;</button>
+      </div>
+      <div class="region-modal-body" id="region-modal-body">
+        <span class="loading-hint">请先选中一个区域</span>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -746,6 +882,71 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
         row.innerHTML = `<span class="name">${name}</span><span class="value">${value}</span>`;
         detailGridElement.appendChild(row);
       }
+
+      const viewBtn = document.createElement("button");
+      viewBtn.className = "view-region-btn";
+      viewBtn.textContent = "查看区域原图";
+      viewBtn.addEventListener("click", () => openRegionModal(region));
+      detailGridElement.appendChild(viewBtn);
+    }
+
+    /* ---- 区域原图弹窗 ---- */
+    const modalBackdrop = document.getElementById("region-modal-backdrop");
+    const modalTitle = document.getElementById("region-modal-title");
+    const modalBody = document.getElementById("region-modal-body");
+    const modalControls = document.getElementById("region-modal-controls");
+    const modalSizeBtns = Array.from(modalControls.querySelectorAll("button[data-size]"));
+    let modalCurrentRegionId = null;
+    let modalCurrentSize = "1024";
+
+    function openRegionModal(region) {
+      modalCurrentRegionId = region.region_id;
+      modalTitle.textContent = `区域原图 — ${region.region_id}`;
+      modalCurrentSize = "1024";
+      updateModalSizeBtns();
+      loadRegionImage();
+      modalBackdrop.classList.add("open");
+    }
+
+    function closeRegionModal() {
+      modalBackdrop.classList.remove("open");
+      modalBody.innerHTML = "";
+      modalCurrentRegionId = null;
+    }
+
+    function updateModalSizeBtns() {
+      for (const btn of modalSizeBtns) {
+        btn.classList.toggle("active", btn.dataset.size === modalCurrentSize);
+      }
+    }
+
+    function loadRegionImage() {
+      if (!modalCurrentRegionId) return;
+      modalBody.innerHTML = '<span class="loading-hint">加载中…</span>';
+      const sizeParam = modalCurrentSize === "full" ? "" : `&max_size=${modalCurrentSize}`;
+      const url = `/api/region-image?region_id=${encodeURIComponent(modalCurrentRegionId)}${sizeParam}`;
+      const img = new window.Image();
+      img.onload = () => {
+        modalBody.innerHTML = "";
+        modalBody.appendChild(img);
+      };
+      img.onerror = () => {
+        modalBody.innerHTML = '<span class="loading-hint">加载失败，请确认 serve 服务已启动并指向正确的输出目录。</span>';
+      };
+      img.src = url;
+    }
+
+    document.getElementById("region-modal-close").addEventListener("click", closeRegionModal);
+    modalBackdrop.addEventListener("click", (event) => {
+      if (event.target === modalBackdrop) closeRegionModal();
+    });
+
+    for (const btn of modalSizeBtns) {
+      btn.addEventListener("click", () => {
+        modalCurrentSize = btn.dataset.size;
+        updateModalSizeBtns();
+        loadRegionImage();
+      });
     }
 
     function applyZoom() {
@@ -833,6 +1034,14 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     regionSearchElement.addEventListener("input", (event) => {
       filterState.query = event.target.value;
       renderRegions();
+    });
+
+    regionSearchElement.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        focusFirstMatchingRegion();
+        renderRegions();
+      }
     });
 
     for (const chip of filterChipElements) {
