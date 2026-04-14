@@ -27,7 +27,7 @@ exclude = ["**/tests/**", "**/util/redis_*.py", "**/alembic/*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "I", "N", "UP", "ANN", "FLY", "PT", "RET", "SIM", "ARG", "ERA"]
-ignore = ["ANN101", "ANN102", "B008", "E501"]
+ignore = ["B008", "E501"]
 
 [tool.ruff.format]
 quote-style = "double"

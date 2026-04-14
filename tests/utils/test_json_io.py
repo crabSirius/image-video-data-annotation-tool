@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from src.utils.json_io import load_jsonl, write_json, write_jsonl
+from src.utils.json_io import (
+    append_jsonl,
+    load_jsonl,
+    load_latest_jsonl_records,
+    write_json,
+    write_jsonl,
+)
 
 
 def test_write_json_creates_parent_directories_and_writes_utf8_content(tmp_path) -> None:
@@ -42,3 +48,35 @@ def test_load_jsonl_raises_for_non_object_payloads(tmp_path) -> None:
 
     with pytest.raises(ValueError):
         load_jsonl(target)
+
+
+def test_append_jsonl_appends_rows_without_overwriting(tmp_path) -> None:
+    target = tmp_path / "events.jsonl"
+
+    append_jsonl(target, {"id": "a", "status": "pending"})
+    append_jsonl(target, {"id": "b", "status": "done"})
+
+    assert load_jsonl(target) == [
+        {"id": "a", "status": "pending"},
+        {"id": "b", "status": "done"},
+    ]
+
+
+def test_load_latest_jsonl_records_keeps_last_row_per_key(tmp_path) -> None:
+    target = tmp_path / "events.jsonl"
+    target.write_text(
+        "\n".join(
+            [
+                '{"id": "a", "status": "pending"}',
+                '{"id": "b", "status": "done"}',
+                '{"id": "a", "status": "done"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert load_latest_jsonl_records(target, "id") == {
+        "a": {"id": "a", "status": "done"},
+        "b": {"id": "b", "status": "done"},
+    }
