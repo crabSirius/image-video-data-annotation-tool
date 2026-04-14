@@ -196,11 +196,18 @@ def test_run_pipeline_sync_exports_dashboard_and_state(tmp_path: Path) -> None:
     assert (output_dir / "region_status.jsonl").exists()
     assert (output_dir / "damage_tile_status.jsonl").exists()
     assert (output_dir / "label_studio_tasks.json").exists()
+    dashboard_html = (output_dir / "dashboard" / "index.html").read_text(encoding="utf-8")
+    assert 'id="region-search"' in dashboard_html
+    assert 'id="focus-first-match"' in dashboard_html
+    assert 'data-filter="positive"' in dashboard_html
 
     dashboard_data = json.loads(
         (output_dir / "dashboard" / "dashboard_data.json").read_text(encoding="utf-8")
     )
     assert dashboard_data["summary"]["tree_region_count"] == 2
+    assert dashboard_data["source_image"] == {"width": 384, "height": 384}
+    assert dashboard_data["overview_image"]["width"] <= 384
+    assert dashboard_data["overview_image"]["height"] <= 384
     assert len(dashboard_data["regions"]) == 4
     assert dashboard_data["detections"]
 

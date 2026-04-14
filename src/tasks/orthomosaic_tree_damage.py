@@ -768,7 +768,7 @@ async def run_orthomosaic_tree_damage_pipeline(
             dataset=dataset,
             regions=regions,
         )
-        _ensure_overview_image(
+        overview_width, overview_height = _ensure_overview_image(
             dataset=dataset, path=overview_path, max_size=config.overview_max_size
         )
 
@@ -779,6 +779,8 @@ async def run_orthomosaic_tree_damage_pipeline(
             config=config,
             dataset=dataset,
             overview_image_name=overview_path.name,
+            overview_width=overview_width,
+            overview_height=overview_height,
             regions=regions,
             tree_results=tree_results,
             damage_tile_results=damage_tile_results,
@@ -834,6 +836,8 @@ async def run_orthomosaic_tree_damage_pipeline(
                     config=config,
                     dataset=dataset,
                     overview_image_name=overview_path.name,
+                    overview_width=overview_width,
+                    overview_height=overview_height,
                     regions=regions,
                     tree_results=tree_results,
                     damage_tile_results=damage_tile_results,
@@ -844,6 +848,8 @@ async def run_orthomosaic_tree_damage_pipeline(
             config=config,
             dataset=dataset,
             overview_image_name=overview_path.name,
+            overview_width=overview_width,
+            overview_height=overview_height,
             regions=regions,
             tree_results=tree_results,
             damage_tile_results=damage_tile_results,
@@ -1190,6 +1196,8 @@ def _materialize_pipeline_outputs(
     config: OrthomosaicTreeDamageConfig,
     dataset: rasterio.io.DatasetReader,
     overview_image_name: str,
+    overview_width: int,
+    overview_height: int,
     regions: list[RegionCandidate],
     tree_results: dict[str, TreeRegionResult],
     damage_tile_results: dict[str, DamageTileResult],
@@ -1246,6 +1254,8 @@ def _materialize_pipeline_outputs(
         "tree_region_mode": config.tree_region_mode,
         "resume_enabled": True,
         "dashboard_path": str(config.output_dir / "dashboard" / "index.html"),
+        "overview_width": overview_width,
+        "overview_height": overview_height,
         "total_region_count": len(ordered_region_states),
         "tree_region_checked_count": sum(
             1 for state in ordered_region_states if state.tree_stage_status == "done"
@@ -1284,8 +1294,10 @@ def _materialize_pipeline_outputs(
         title=config.dashboard_title,
         orthomosaic_path=str(config.orthomosaic_path),
         overview_image_name=overview_image_name,
-        image_width=dataset.width,
-        image_height=dataset.height,
+        source_image_width=dataset.width,
+        source_image_height=dataset.height,
+        overview_width=overview_width,
+        overview_height=overview_height,
         summary=summary,
         regions=[state.to_dict() for state in ordered_region_states],
         detections=[detection.to_dict() for detection in deduplicated_detections],
@@ -1435,9 +1447,10 @@ def _ensure_overview_image(
     dataset: rasterio.io.DatasetReader,
     path: Path,
     max_size: int,
-) -> None:
+) -> tuple[int, int]:
     if path.exists():
-        return
+        with Image.open(path) as image:
+            return image.width, image.height
 
     image = read_window_image(
         dataset=dataset,
@@ -1449,6 +1462,7 @@ def _ensure_overview_image(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(image).save(path, format="JPEG", quality=90)
+    return image.shape[1], image.shape[0]
 
 
 def _save_tile_image(path: Path, image: np.ndarray) -> None:
