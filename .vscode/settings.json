@@ -23,6 +23,9 @@
     "terminal.integrated.env.linux": {
         "PYTHONPATH": "${workspaceFolder}"
     },
+    "terminal.integrated.env.osx": {
+        "PYTHONPATH": "${workspaceFolder}"
+    },
     "cursorpyright.analysis.autoImportCompletions": true,
     "cursorpyright.analysis.autoSearchPaths": true,
     "cursorpyright.analysis.diagnosticMode": "workspace",

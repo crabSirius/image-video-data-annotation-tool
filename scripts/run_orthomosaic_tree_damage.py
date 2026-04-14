@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+# ruff: noqa: E402, I001
+
 import argparse
 import json
+import sys
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.core.llm_qwenvl_api_controller import QwenVLAPIController, QwenVLAPIControllerConfig
 from src.tasks.orthomosaic_tree_damage import (
@@ -14,7 +21,7 @@ from src.tasks.orthomosaic_tree_damage import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="正射图树木区域 + 枯死/倒伏两阶段预标注流水线")
-    parser.add_argument("--orthomosaic", type=Path, required=True, help="输入 GeoTIFF 正射图路径")
+    parser.add_argument("--input-path", type=Path, required=True, help="输入 GeoTIFF 正射图路径")
     parser.add_argument("--output-dir", type=Path, required=True, help="输出目录")
     parser.add_argument("--region-size", type=int, default=4096, help="粗粒度区域尺寸，默认 4096")
     parser.add_argument("--region-overlap", type=int, default=0, help="粗粒度区域重叠像素")
@@ -129,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     pipeline_config = OrthomosaicTreeDamageConfig(
-        orthomosaic_path=args.orthomosaic,
+        orthomosaic_path=args.input_path,
         output_dir=args.output_dir,
         region_size=args.region_size,
         region_overlap=args.region_overlap,
