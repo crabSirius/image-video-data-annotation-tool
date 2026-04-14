@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import time
 from io import BytesIO
 from typing import Any
@@ -10,17 +9,27 @@ from typing import Any
 import cv2
 import httpx
 import numpy as np
+from loguru import logger
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from tenacity import (
-    before_sleep_log,
+    RetryCallState,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
 
-logger = logging.getLogger(__name__)
+
+def _log_before_retry(retry_state: RetryCallState) -> None:
+    exception = retry_state.outcome.exception() if retry_state.outcome is not None else None
+    sleep_seconds = 0.0 if retry_state.next_action is None else retry_state.next_action.sleep
+    logger.warning(
+        "VLM API 调用失败，准备重试: attempt={} next_sleep={:.2f}s error={}",
+        retry_state.attempt_number,
+        sleep_seconds,
+        exception,
+    )
 
 
 class QwenVLAPIControllerConfig(BaseModel):
@@ -101,7 +110,7 @@ class QwenVLAPIController:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(Exception),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=_log_before_retry,
     )
     async def _inference_with_api(
         self,
@@ -122,7 +131,7 @@ class QwenVLAPIController:
                     timeout=self.request_timeout_seconds,
                 )
             elapsed = time.time() - start_time
-            logger.info("VLM API 推理时间: %.2f 秒", elapsed)
+            logger.info("VLM API 推理时间: {:.2f} 秒", elapsed)
             response.raise_for_status()
 
             result = response.json()
@@ -136,14 +145,14 @@ class QwenVLAPIController:
 
             raise ValueError(f"VLM API 返回格式异常: {result}")
         except httpx.HTTPError as exc:
-            logger.error("API 请求异常: %s", exc)
+            logger.error("API 请求异常: {}", exc)
             raise
         except json.JSONDecodeError as exc:
             raw_response = "" if response is None else response.text
-            logger.error("JSON 解析异常: %s, 原始响应: %s", exc, raw_response)
+            logger.error("JSON 解析异常: {}, 原始响应: {}", exc, raw_response)
             raise
         except Exception as exc:
-            logger.error("未预期的异常: %s", exc)
+            logger.error("未预期的异常: {}", exc)
             raise
 
     async def inference_image_base64(self, prompt: str, images: list[np.ndarray]) -> str:
@@ -168,5 +177,5 @@ class QwenVLAPIController:
             )
         result = await self._inference_with_api(messages)
         elapsed = time.time() - start_time
-        logger.info("推理执行时间: %.2f 秒", elapsed)
+        logger.info("推理执行时间: {:.2f} 秒", elapsed)
         return result

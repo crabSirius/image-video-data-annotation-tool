@@ -9,6 +9,7 @@ from typing import Literal, Protocol
 
 import numpy as np
 import rasterio
+from loguru import logger
 from PIL import Image
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
@@ -786,20 +787,41 @@ async def run_orthomosaic_tree_damage_pipeline(
             damage_tile_results=damage_tile_results,
         )
 
-        processed_regions_this_run = 0
-        for region in regions:
-            region_states = build_region_states(
-                regions=regions,
-                tree_results=tree_results,
-                damage_tile_results=damage_tile_results,
-                config=config,
-            )
-            region_state = region_states[region.region_id]
-            if not _region_needs_processing(region_state, runner):
-                continue
-            if config.max_regions is not None and processed_regions_this_run >= config.max_regions:
-                break
+        initial_region_states = build_region_states(
+            regions=regions,
+            tree_results=tree_results,
+            damage_tile_results=damage_tile_results,
+            config=config,
+        )
+        pending_regions = [
+            region
+            for region in regions
+            if _region_needs_processing(initial_region_states[region.region_id], runner)
+        ]
+        target_regions = pending_regions
+        if config.max_regions is not None:
+            target_regions = pending_regions[: config.max_regions]
 
+        logger.info(
+            "开始处理正射图: total_regions={} pending_regions={} target_regions={} output_dir={}",
+            len(regions),
+            len(pending_regions),
+            len(target_regions),
+            output_dir,
+        )
+
+        processed_regions_this_run = 0
+        total_target_regions = len(target_regions)
+        for region_index, region in enumerate(target_regions, start=1):
+            logger.info(
+                "区域进度 {}，开始处理 region_id={} row={} col={} size={}x{}",
+                _format_progress(region_index, total_target_regions),
+                region.region_id,
+                region.row_off,
+                region.col_off,
+                region.width,
+                region.height,
+            )
             tree_result = tree_results.get(region.region_id)
             if tree_result is None:
                 preview = read_window_image(
@@ -818,6 +840,21 @@ async def run_orthomosaic_tree_damage_pipeline(
                 )
                 tree_results[region.region_id] = tree_result
                 append_jsonl(tree_result_path, tree_result.to_dict())
+                logger.info(
+                    "区域 {} 树木判定完成: has_tree={} score={:.3f} method={}",
+                    region.region_id,
+                    tree_result.has_tree,
+                    tree_result.score,
+                    tree_result.method,
+                )
+            else:
+                logger.info(
+                    "区域 {} 复用已有树木判定: has_tree={} score={:.3f} method={}",
+                    region.region_id,
+                    tree_result.has_tree,
+                    tree_result.score,
+                    tree_result.method,
+                )
 
             if tree_result.has_tree:
                 await _process_region_damage_tiles(
@@ -829,8 +866,21 @@ async def run_orthomosaic_tree_damage_pipeline(
                     damage_tile_results=damage_tile_results,
                     damage_tile_result_path=damage_tile_result_path,
                 )
+            else:
+                logger.info("区域 {} 无树木，跳过损伤检测阶段", region.region_id)
 
             processed_regions_this_run += 1
+            region_summary = _build_region_processing_summary(region.region_id, damage_tile_results)
+            logger.info(
+                "区域进度 {}，处理完成 region_id={} tree={} damage_tiles={}/{} pending_model={} detections={}",
+                _format_progress(processed_regions_this_run, total_target_regions),
+                region.region_id,
+                tree_result.has_tree,
+                region_summary["processed_tiles"],
+                region_summary["total_tiles"],
+                region_summary["pending_model_tiles"],
+                region_summary["detection_count"],
+            )
             if processed_regions_this_run % config.dashboard_refresh_interval_regions == 0:
                 _materialize_pipeline_outputs(
                     config=config,
@@ -842,6 +892,16 @@ async def run_orthomosaic_tree_damage_pipeline(
                     tree_results=tree_results,
                     damage_tile_results=damage_tile_results,
                 )
+                logger.info(
+                    "已刷新 dashboard 和导出文件: processed_regions_this_run={}",
+                    processed_regions_this_run,
+                )
+
+        logger.info(
+            "正射图处理结束: processed_regions_this_run={} target_regions={}",
+            processed_regions_this_run,
+            total_target_regions,
+        )
 
     with rasterio.open(config.orthomosaic_path) as dataset:
         return _materialize_pipeline_outputs(
@@ -1072,15 +1132,38 @@ async def _process_region_damage_tiles(
         max_tiles_per_region=config.max_tiles_per_region,
     )
 
+    pending_tile_candidates: list[TileCandidate] = []
     for base_candidate in tile_candidates:
         existing = damage_tile_results.get(base_candidate.tile_id)
         if existing is not None and existing.status in DONE_TILE_STATUSES:
             continue
         if existing is not None and existing.status == "pending_model" and runner is None:
             continue
+        pending_tile_candidates.append(base_candidate)
+    total_pending_tiles = len(pending_tile_candidates)
+    if total_pending_tiles == 0:
+        logger.info(
+            "区域 {} 损伤切片无需新增处理: total_tiles={}",
+            region.region_id,
+            len(tile_candidates),
+        )
+        return
+
+    logger.info(
+        "区域 {} 开始损伤切片处理: pending_tiles={} total_tiles={}",
+        region.region_id,
+        total_pending_tiles,
+        len(tile_candidates),
+    )
+
+    completed_tiles = 0
+    for base_candidate in pending_tile_candidates:
+        existing = damage_tile_results.get(base_candidate.tile_id)
 
         tile_candidate = base_candidate
         image_path: Path | None = None
+        result_status = "pending"
+        detection_count = 0
 
         if existing is not None and existing.status == "pending_model":
             tile_candidate = existing.to_tile_candidate()
@@ -1132,6 +1215,16 @@ async def _process_region_damage_tiles(
                 )
                 damage_tile_results[result.tile_id] = result
                 append_jsonl(damage_tile_result_path, result.to_dict())
+                result_status = result.status
+                completed_tiles += 1
+                _log_tile_progress(
+                    region_id=region.region_id,
+                    tile_id=result.tile_id,
+                    completed_tiles=completed_tiles,
+                    total_tiles=total_pending_tiles,
+                    status=result_status,
+                    detection_count=detection_count,
+                )
                 continue
 
             image_path = damage_tiles_dir / f"{tile_candidate.tile_id}.jpg"
@@ -1154,6 +1247,16 @@ async def _process_region_damage_tiles(
                 )
                 damage_tile_results[result.tile_id] = result
                 append_jsonl(damage_tile_result_path, result.to_dict())
+                result_status = result.status
+                completed_tiles += 1
+                _log_tile_progress(
+                    region_id=region.region_id,
+                    tile_id=result.tile_id,
+                    completed_tiles=completed_tiles,
+                    total_tiles=total_pending_tiles,
+                    status=result_status,
+                    detection_count=detection_count,
+                )
                 continue
 
         if runner is None:
@@ -1189,6 +1292,24 @@ async def _process_region_damage_tiles(
         )
         damage_tile_results[result.tile_id] = result
         append_jsonl(damage_tile_result_path, result.to_dict())
+        result_status = result.status
+        detection_count = len(projected_detections)
+        completed_tiles += 1
+        _log_tile_progress(
+            region_id=region.region_id,
+            tile_id=result.tile_id,
+            completed_tiles=completed_tiles,
+            total_tiles=total_pending_tiles,
+            status=result_status,
+            detection_count=detection_count,
+        )
+
+    logger.info(
+        "区域 {} 损伤切片处理完成: processed_tiles={} total_tiles={}",
+        region.region_id,
+        completed_tiles,
+        total_pending_tiles,
+    )
 
 
 def _materialize_pipeline_outputs(
@@ -1334,6 +1455,64 @@ def _compute_damage_stage_status(
     if prepared_tiles == total_tiles and pending_model_tiles == total_tiles:
         return "pending_model"
     return "running"
+
+
+def _format_progress(current: int, total: int) -> str:
+    if total <= 0:
+        return "0/0 (0.0%)"
+    return f"{current}/{total} ({current / total:.1%})"
+
+
+def _should_log_progress(current: int, total: int) -> bool:
+    if total <= 10:
+        return True
+    if current in {1, total}:
+        return True
+    if current % 10 == 0:
+        return True
+    previous_bucket = (current - 1) * 10 // total
+    current_bucket = current * 10 // total
+    return current_bucket != previous_bucket
+
+
+def _log_tile_progress(
+    *,
+    region_id: str,
+    tile_id: str,
+    completed_tiles: int,
+    total_tiles: int,
+    status: str,
+    detection_count: int,
+) -> None:
+    if not _should_log_progress(completed_tiles, total_tiles):
+        return
+    logger.info(
+        "区域 {} 切片进度 {} latest_tile={} status={} detections={}",
+        region_id,
+        _format_progress(completed_tiles, total_tiles),
+        tile_id,
+        status,
+        detection_count,
+    )
+
+
+def _build_region_processing_summary(
+    region_id: str,
+    damage_tile_results: dict[str, DamageTileResult],
+) -> dict[str, int]:
+    region_tile_results = [
+        tile_result for tile_result in damage_tile_results.values() if tile_result.region_id == region_id
+    ]
+    return {
+        "total_tiles": len(region_tile_results),
+        "processed_tiles": sum(
+            1 for tile_result in region_tile_results if tile_result.status in DONE_TILE_STATUSES
+        ),
+        "pending_model_tiles": sum(
+            1 for tile_result in region_tile_results if tile_result.status == "pending_model"
+        ),
+        "detection_count": sum(len(tile_result.detections) for tile_result in region_tile_results),
+    }
 
 
 def _compute_dashboard_status(

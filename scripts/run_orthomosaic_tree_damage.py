@@ -11,11 +11,20 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from loguru import logger
+
 from src.core.llm_qwenvl_api_controller import QwenVLAPIController, QwenVLAPIControllerConfig
 from src.tasks.orthomosaic_tree_damage import (
     OrthomosaicTreeDamageConfig,
     QwenVLImageRunner,
     run_pipeline_sync,
+)
+
+logger.remove()
+logger.add(
+    sys.stderr,
+    level="INFO",
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name} | [{file.name}:{line}] - {message}",
 )
 
 

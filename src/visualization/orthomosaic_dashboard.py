@@ -478,16 +478,44 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       overflow: auto;
       display: flex;
       justify-content: center;
-      align-items: center;
+      align-items: flex-start;
       min-height: 200px;
       padding: 12px;
     }
 
-    .region-modal-body img {
+    .region-image-container {
+      position: relative;
+      display: inline-block;
+      line-height: 0;
+    }
+
+    .region-image-container img {
       max-width: 100%;
       max-height: 80vh;
       border-radius: 12px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+      display: block;
+    }
+
+    .region-det-box {
+      position: absolute;
+      border: 2px solid rgba(239, 68, 68, 0.9);
+      background: rgba(239, 68, 68, 0.08);
+      pointer-events: none;
+    }
+
+    .region-det-label {
+      position: absolute;
+      top: -1px;
+      left: -1px;
+      background: rgba(185, 28, 28, 0.88);
+      color: #fff;
+      font-size: 11px;
+      line-height: 1;
+      padding: 2px 5px;
+      border-radius: 0 0 4px 0;
+      white-space: nowrap;
+      pointer-events: none;
     }
 
     .region-modal-body .loading-hint {
@@ -899,9 +927,13 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     let modalCurrentRegionId = null;
     let modalCurrentSize = "1024";
 
+    let modalCurrentRegion = null;
+
     function openRegionModal(region) {
       modalCurrentRegionId = region.region_id;
-      modalTitle.textContent = `区域原图 — ${region.region_id}`;
+      modalCurrentRegion = region;
+      const detCount = getRegionDetections(region).length;
+      modalTitle.textContent = `区域原图 — ${region.region_id}` + (detCount > 0 ? ` (${detCount} 个异常)` : "");
       modalCurrentSize = "1024";
       updateModalSizeBtns();
       loadRegionImage();
@@ -912,6 +944,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       modalBackdrop.classList.remove("open");
       modalBody.innerHTML = "";
       modalCurrentRegionId = null;
+      modalCurrentRegion = null;
     }
 
     function updateModalSizeBtns() {
@@ -920,15 +953,69 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       }
     }
 
+    function getRegionDetections(region) {
+      if (!region) return [];
+      const rColOff = Number(region.col_off);
+      const rRowOff = Number(region.row_off);
+      const rW = Number(region.width);
+      const rH = Number(region.height);
+      return DASHBOARD.detections.filter((d) => {
+        if (d.region_id === region.region_id) return true;
+        const [x0, y0] = d.orig_px_bbox;
+        return x0 >= rColOff && x0 < rColOff + rW && y0 >= rRowOff && y0 < rRowOff + rH;
+      });
+    }
+
+    function overlayDetections(container, img, region) {
+      const dets = getRegionDetections(region);
+      if (!dets.length) return;
+
+      const imgW = img.naturalWidth;
+      const imgH = img.naturalHeight;
+      const regionW = Number(region.width);
+      const regionH = Number(region.height);
+      const scaleX = imgW / regionW;
+      const scaleY = imgH / regionH;
+      const rColOff = Number(region.col_off);
+      const rRowOff = Number(region.row_off);
+
+      for (const det of dets) {
+        const [ox0, oy0, ox1, oy1] = det.orig_px_bbox;
+        const lx = (ox0 - rColOff) * scaleX;
+        const ly = (oy0 - rRowOff) * scaleY;
+        const bw = (ox1 - ox0) * scaleX;
+        const bh = (oy1 - oy0) * scaleY;
+
+        const box = document.createElement("div");
+        box.className = "region-det-box";
+        box.style.left = `${lx}px`;
+        box.style.top = `${ly}px`;
+        box.style.width = `${bw}px`;
+        box.style.height = `${bh}px`;
+
+        const label = document.createElement("span");
+        label.className = "region-det-label";
+        label.textContent = `${det.label} ${Number(det.score).toFixed(2)}`;
+        box.appendChild(label);
+
+        container.appendChild(box);
+      }
+    }
+
     function loadRegionImage() {
-      if (!modalCurrentRegionId) return;
+      if (!modalCurrentRegionId || !modalCurrentRegion) return;
       modalBody.innerHTML = '<span class="loading-hint">加载中…</span>';
       const sizeParam = modalCurrentSize === "full" ? "" : `&max_size=${modalCurrentSize}`;
       const url = `/api/region-image?region_id=${encodeURIComponent(modalCurrentRegionId)}${sizeParam}`;
       const img = new window.Image();
+      const region = modalCurrentRegion;
       img.onload = () => {
         modalBody.innerHTML = "";
-        modalBody.appendChild(img);
+        const container = document.createElement("div");
+        container.className = "region-image-container";
+        container.appendChild(img);
+        overlayDetections(container, img, region);
+        modalBody.appendChild(container);
       };
       img.onerror = () => {
         modalBody.innerHTML = '<span class="loading-hint">加载失败，请确认 serve 服务已启动并指向正确的输出目录。</span>';

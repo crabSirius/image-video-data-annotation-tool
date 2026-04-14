@@ -13,4 +13,4 @@ htmlcov/
 .coverage.*
 .DS_Store
 config.toml
-output/
+outputs/
