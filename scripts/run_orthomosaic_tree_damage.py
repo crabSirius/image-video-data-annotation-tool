@@ -40,13 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--min-tree-region-vegetation-fraction",
         type=float,
-        default=0.08,
+        default=0.3,
         help="粗区域最小植被占比阈值",
     )
     parser.add_argument(
         "--min-tree-region-score",
         type=float,
-        default=0.18,
+        default=0.2,
         help="粗区域树木判定得分阈值",
     )
     parser.add_argument("--tile-size", type=int, default=1024, help="细粒度检测切片尺寸")

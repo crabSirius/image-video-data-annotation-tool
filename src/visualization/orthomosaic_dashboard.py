@@ -64,7 +64,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       --non-tree: rgba(59, 130, 246, 0.34);
       --tree-only: rgba(245, 158, 11, 0.34);
       --running: rgba(251, 191, 36, 0.45);
-      --done: rgba(34, 197, 94, 0.28);
+      --done: rgba(139, 92, 246, 0.22);
       --positive: rgba(239, 68, 68, 0.34);
       --detection: rgba(185, 28, 28, 0.95);
     }
@@ -466,7 +466,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
         <h3>状态说明</h3>
         <p class="footer-note">
           灰色表示未处理；蓝色表示已判断为非树木区域；金色表示树木区域已确认但异常检测尚未完成；
-          绿色表示异常检测已完成且未发现异常；红色表示该区域已发现枯死木或倒伏树。
+          紫色表示异常检测已完成且未发现异常；红色表示该区域已发现枯死木或倒伏树。
         </p>
       </div>
     </aside>
