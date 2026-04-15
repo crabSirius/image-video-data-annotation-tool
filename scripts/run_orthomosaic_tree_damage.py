@@ -150,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="打印大模型原始输出文本",
     )
+    parser.add_argument(
+        "--llm-input-sample-count-per-stage",
+        type=int,
+        default=5,
+        help="每个大模型阶段最多额外保存多少张输入样本图，默认 5",
+    )
     return parser
 
 
@@ -177,6 +183,7 @@ def main() -> None:
         dashboard_refresh_interval_regions=args.dashboard_refresh_interval_regions,
         llm_max_concurrency=args.llm_max_concurrency,
         print_llm_output=args.print_llm_output,
+        llm_input_sample_count_per_stage=args.llm_input_sample_count_per_stage,
     )
 
     runner = None

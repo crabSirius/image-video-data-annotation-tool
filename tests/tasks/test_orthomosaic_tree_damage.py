@@ -22,6 +22,7 @@ from src.tasks.orthomosaic_tree_damage import (
     project_tile_detection,
     run_pipeline_sync,
 )
+from src.utils.json_io import load_jsonl
 
 
 def test_build_region_candidates_covers_image_edges() -> None:
@@ -260,6 +261,43 @@ def test_log_llm_output_emits_raw_response_when_enabled(monkeypatch: object) -> 
         "region_00001_tile_0001",
         '{"detections":[]}',
     )
+
+
+def test_run_pipeline_sync_saves_limited_llm_input_samples(tmp_path: Path) -> None:
+    orthomosaic_path = tmp_path / "sample_llm_input.tif"
+    output_dir = tmp_path / "outputs_llm_input"
+    _write_sample_orthomosaic(orthomosaic_path)
+
+    class FakeRunner:
+        async def run_prompt(self, prompt: str, image: np.ndarray) -> str:
+            del prompt, image
+            return json.dumps({"detections": []})
+
+    run_pipeline_sync(
+        config=OrthomosaicTreeDamageConfig(
+            orthomosaic_path=orthomosaic_path,
+            output_dir=output_dir,
+            region_size=192,
+            region_overlap=0,
+            tile_size=96,
+            overlap=0,
+            tree_region_mode="heuristic",
+            llm_input_sample_count_per_stage=2,
+        ),
+        runner=FakeRunner(),
+    )
+
+    damage_sample_dir = output_dir / "llm_input_samples" / "damage_tile"
+    saved_images = sorted(damage_sample_dir.glob("*.jpg"))
+    assert len(saved_images) == 2
+    assert saved_images[0].name.endswith("_96x96.jpg")
+    assert saved_images[1].name.endswith("_96x96.jpg")
+
+    manifest_rows = load_jsonl(output_dir / "llm_input_samples" / "samples.jsonl")
+    assert len(manifest_rows) == 2
+    assert all(row["stage"] == "damage_tile" for row in manifest_rows)
+    assert all(row["width"] == 96 for row in manifest_rows)
+    assert all(row["height"] == 96 for row in manifest_rows)
 
 
 def test_run_pipeline_sync_limits_llm_parallelism_to_configured_value(tmp_path: Path) -> None:

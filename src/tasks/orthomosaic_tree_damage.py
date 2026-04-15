@@ -30,6 +30,7 @@ from src.visualization.orthomosaic_dashboard import build_dashboard_payload, wri
 
 DamageLabel = Literal["fallen_tree", "diseased_tree"]
 TreeRegionMode = Literal["heuristic", "qwen_vl"]
+LLMInputStage = Literal["tree_region", "damage_tile"]
 
 DONE_TILE_STATUSES = {"done", "skipped_low_signal"}
 RESOLVED_TILE_STATUSES = DONE_TILE_STATUSES | {"pending_model"}
@@ -80,6 +81,7 @@ class OrthomosaicTreeDamageConfig:
     dashboard_refresh_interval_regions: int = 1
     llm_max_concurrency: int = 4
     print_llm_output: bool = False
+    llm_input_sample_count_per_stage: int = 0
 
     def __post_init__(self) -> None:
         if self.region_size <= 0:
@@ -106,6 +108,87 @@ class OrthomosaicTreeDamageConfig:
             raise ValueError("dashboard_refresh_interval_regions 必须大于 0")
         if self.llm_max_concurrency <= 0:
             raise ValueError("llm_max_concurrency 必须大于 0")
+        if self.llm_input_sample_count_per_stage < 0:
+            raise ValueError("llm_input_sample_count_per_stage 不能小于 0")
+
+
+@dataclass(slots=True)
+class LLMInputSampleRecorder:
+    root_dir: Path
+    manifest_path: Path
+    max_samples_per_stage: int
+    sample_counts: dict[LLMInputStage, int]
+    saved_keys: set[str]
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        output_dir: Path,
+        max_samples_per_stage: int,
+    ) -> LLMInputSampleRecorder:
+        root_dir = output_dir / "llm_input_samples"
+        manifest_path = root_dir / "samples.jsonl"
+        records = (
+            load_latest_jsonl_records(manifest_path, "sample_key") if manifest_path.exists() else {}
+        )
+        sample_counts: dict[LLMInputStage, int] = {"tree_region": 0, "damage_tile": 0}
+        for record in records.values():
+            stage = record.get("stage")
+            if stage in sample_counts:
+                sample_counts[stage] += 1
+        return cls(
+            root_dir=root_dir,
+            manifest_path=manifest_path,
+            max_samples_per_stage=max_samples_per_stage,
+            sample_counts=sample_counts,
+            saved_keys=set(records.keys()),
+        )
+
+    def maybe_save(
+        self,
+        *,
+        stage: LLMInputStage,
+        item_id: str,
+        image: np.ndarray,
+    ) -> Path | None:
+        if self.max_samples_per_stage <= 0:
+            return None
+
+        sample_key = f"{stage}:{item_id}"
+        if sample_key in self.saved_keys:
+            return None
+        if self.sample_counts[stage] >= self.max_samples_per_stage:
+            return None
+
+        height, width = image.shape[:2]
+        sample_index = self.sample_counts[stage] + 1
+        stage_dir = self.root_dir / stage
+        output_path = stage_dir / f"{sample_index:03d}_{item_id}_{width}x{height}.jpg"
+        _save_tile_image(output_path, image)
+        append_jsonl(
+            self.manifest_path,
+            {
+                "sample_key": sample_key,
+                "stage": stage,
+                "item_id": item_id,
+                "width": width,
+                "height": height,
+                "path": str(output_path),
+                "saved_at": _now_iso(),
+            },
+        )
+        self.saved_keys.add(sample_key)
+        self.sample_counts[stage] = sample_index
+        logger.info(
+            "已保存大模型输入样本 stage={} item_id={} size={}x{} path={}",
+            stage,
+            item_id,
+            width,
+            height,
+            output_path,
+        )
+        return output_path
 
 
 @dataclass(slots=True, frozen=True)
@@ -769,6 +852,10 @@ async def run_orthomosaic_tree_damage_pipeline(
     damage_tile_result_path = state_dir / "damage_tile_results.jsonl"
     region_index_path = state_dir / "region_index.json"
     overview_path = dashboard_dir / "overview.jpg"
+    llm_input_sample_recorder = LLMInputSampleRecorder.create(
+        output_dir=output_dir,
+        max_samples_per_stage=config.llm_input_sample_count_per_stage,
+    )
 
     with rasterio.open(config.orthomosaic_path) as dataset:
         regions = _load_or_create_region_index(
@@ -851,6 +938,7 @@ async def run_orthomosaic_tree_damage_pipeline(
                     preview=preview,
                     config=config,
                     runner=runner,
+                    llm_input_sample_recorder=llm_input_sample_recorder,
                 )
                 tree_results[region.region_id] = tree_result
                 append_jsonl(tree_result_path, tree_result.to_dict())
@@ -876,6 +964,7 @@ async def run_orthomosaic_tree_damage_pipeline(
                     region=region,
                     config=config,
                     runner=runner,
+                    llm_input_sample_recorder=llm_input_sample_recorder,
                     damage_tiles_dir=damage_tiles_dir,
                     damage_tile_results=damage_tile_results,
                     damage_tile_result_path=damage_tile_result_path,
@@ -942,12 +1031,18 @@ async def classify_tree_region(
     preview: np.ndarray,
     config: OrthomosaicTreeDamageConfig,
     runner: ImagePromptRunner | None,
+    llm_input_sample_recorder: LLMInputSampleRecorder,
 ) -> TreeRegionResult:
     vegetation_fraction, texture_score, tree_score = score_tree_region_preview(preview)
 
     if config.tree_region_mode == "qwen_vl" and runner is not None:
         prompt = build_tree_region_prompt(region)
         try:
+            llm_input_sample_recorder.maybe_save(
+                stage="tree_region",
+                item_id=region.region_id,
+                image=preview,
+            )
             response_text = await runner.run_prompt(prompt, preview)
             _log_llm_output(
                 enabled=config.print_llm_output,
@@ -1187,6 +1282,7 @@ async def _process_region_damage_tiles(
     region: RegionCandidate,
     config: OrthomosaicTreeDamageConfig,
     runner: ImagePromptRunner | None,
+    llm_input_sample_recorder: LLMInputSampleRecorder,
     damage_tiles_dir: Path,
     damage_tile_results: dict[str, DamageTileResult],
     damage_tile_result_path: Path,
@@ -1361,6 +1457,11 @@ async def _process_region_damage_tiles(
             continue
 
         assert image_path is not None
+        llm_input_sample_recorder.maybe_save(
+            stage="damage_tile",
+            item_id=tile_candidate.tile_id,
+            image=image,
+        )
         task = asyncio.create_task(
             _run_damage_tile_detection(
                 tile_candidate=tile_candidate,
