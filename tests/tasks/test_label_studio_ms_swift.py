@@ -91,20 +91,22 @@ def test_build_ms_swift_grounding_rows_splits_rows_per_label_and_resolves_image_
     assert len(rows) == 2
     assert rows[0]["images"] == [str((tmp_path / "label_studio_files/0901/damage_tiles/tile_0001.jpg").resolve())]
     assert rows[0]["objects"] == {
-        "ref": ["diseased_tree"],
-        "bbox": [[125.0, 50.0, 325.0, 200.0], [600.0, 100.0, 700.0, 150.0]],
+        "ref": ["diseased_tree", "diseased_tree", "diseased_tree"],
+        "bbox": [[125.0, 100.0, 325.0, 400.0], [600.0, 200.0, 700.0, 300.0]],
     }
     assert rows[0]["messages"][0] == {
         "role": "user",
-        "content": "<image>找到图像中的diseased_tree",
+        "content": "<image>找到图像中的<ref-object>",
     }
-    assert json.loads(rows[0]["messages"][1]["content"]) == [
-        {"bbox_2d": [125.0, 50.0, 325.0, 200.0], "label": "diseased_tree"},
-        {"bbox_2d": [600.0, 100.0, 700.0, 150.0], "label": "diseased_tree"},
-    ]
+    assert rows[0]["messages"][1]["content"] == (
+        "[\n"
+        '\t{"bbox_2d": <bbox>, "label": "<ref-object>"},\n'
+        '\t{"bbox_2d": <bbox>, "label": "<ref-object>"}\n'
+        "]"
+    )
     assert rows[1]["objects"] == {
-        "ref": ["fallen_tree"],
-        "bbox": [[20.0, 25.0, 100.0, 75.0]],
+        "ref": ["fallen_tree", "fallen_tree"],
+        "bbox": [[20.0, 50.0, 100.0, 150.0]],
     }
 
 
@@ -146,8 +148,8 @@ def test_build_ms_swift_grounding_rows_filters_unwanted_labels() -> None:
 
     assert len(rows) == 1
     assert rows[0]["objects"] == {
-        "ref": ["diseased_tree"],
-        "bbox": [[10.0, 10.0, 20.0, 20.0]],
+        "ref": ["diseased_tree", "diseased_tree"],
+        "bbox": [[100.0, 100.0, 200.0, 200.0]],
     }
 
 
@@ -202,17 +204,17 @@ def test_convert_label_studio_export_file_writes_jsonl_and_summary(tmp_path: Pat
     assert load_jsonl(output_path) == [
         {
             "messages": [
-                {"role": "user", "content": "<image>找到图像中的fallen_tree"},
+                {"role": "user", "content": "<image>找到图像中的<ref-object>"},
                 {
                     "role": "assistant",
-                    "content": '[{"bbox_2d": [10.0, 20.0, 40.0, 60.0], "label": "fallen_tree"}]',
+                    "content": '[\n\t{"bbox_2d": <bbox>, "label": "<ref-object>"}\n]',
                 },
             ],
             "images": [
                 str((tmp_path / "label_studio_files/0901/damage_tiles/tile_0100.jpg").resolve())
             ],
             "objects": {
-                "ref": ["fallen_tree"],
+                "ref": ["fallen_tree", "fallen_tree"],
                 "bbox": [[10.0, 20.0, 40.0, 60.0]],
             },
         }
@@ -243,7 +245,7 @@ def test_build_ms_swift_grounding_rows_can_include_empty_negatives() -> None:
     assert rows == [
         {
             "messages": [
-                {"role": "user", "content": "<image>找到图像中的diseased_tree"},
+                {"role": "user", "content": "<image>找到图像中的<ref-object>"},
                 {"role": "assistant", "content": "[]"},
             ],
             "images": ["images/tile_0200.jpg"],
@@ -251,7 +253,7 @@ def test_build_ms_swift_grounding_rows_can_include_empty_negatives() -> None:
         },
         {
             "messages": [
-                {"role": "user", "content": "<image>找到图像中的fallen_tree"},
+                {"role": "user", "content": "<image>找到图像中的<ref-object>"},
                 {"role": "assistant", "content": "[]"},
             ],
             "images": ["images/tile_0200.jpg"],

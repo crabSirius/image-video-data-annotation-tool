@@ -225,14 +225,14 @@ def test_run_label_studio_delivery_pipeline_writes_subset_jsonls_and_archive(
     assert load_jsonl(tmp_path / "delivery" / "ms_swift" / "tree_damage_positive_only.jsonl") == [
         {
             "messages": [
-                {"role": "user", "content": "<image>找到图像中的fallen_tree"},
+                {"role": "user", "content": "<image>找到图像中的<ref-object>"},
                 {
                     "role": "assistant",
-                    "content": '[{"bbox_2d": [10.0, 20.0, 40.0, 60.0], "label": "fallen_tree"}]',
+                    "content": '[\n\t{"bbox_2d": <bbox>, "label": "<ref-object>"}\n]',
                 },
             ],
             "images": ["images/0910/damage_tiles/tile_0100.jpg"],
-            "objects": {"ref": ["fallen_tree"], "bbox": [[10.0, 20.0, 40.0, 60.0]]},
+            "objects": {"ref": ["fallen_tree", "fallen_tree"], "bbox": [[10.0, 20.0, 40.0, 60.0]]},
         }
     ]
     assert len(

@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from src.utils.json_io import write_jsonl
 
-DEFAULT_PROMPT_TEMPLATE = "<image>找到图像中的{label}"
+DEFAULT_PROMPT_TEMPLATE = "<image>找到图像中的<ref-object>"
 
 
 def load_label_studio_export_tasks(input_path: str | Path) -> list[dict[str, Any]]:
@@ -38,24 +38,22 @@ def build_ms_swift_grounding_rows(
 
     rows: list[dict[str, object]] = []
     for sample in samples:
-        assistant_payload = [
-            {"bbox_2d": bbox, "label": sample["label"]} for bbox in sample["bboxes"]
-        ]
+        bbox_count = len(sample["bboxes"])
         rows.append(
             {
                 "messages": [
                     {
                         "role": "user",
-                        "content": prompt_template.format(label=sample["label"]),
+                        "content": prompt_template,
                     },
                     {
                         "role": "assistant",
-                        "content": json.dumps(assistant_payload, ensure_ascii=False),
+                        "content": _build_assistant_content(bbox_count),
                     },
                 ],
                 "images": [sample["image"]],
                 "objects": {
-                    "ref": [sample["label"]],
+                    "ref": [sample["label"]] * (bbox_count + 1 if bbox_count else 1),
                     "bbox": sample["bboxes"],
                 },
             }
@@ -260,21 +258,11 @@ def _rectangle_result_to_bbox(result: dict[str, Any], *, task_id: object) -> lis
     y = _require_number(value.get("y"), field_name="y", task_id=task_id)
     width = _require_number(value.get("width"), field_name="width", task_id=task_id)
     height = _require_number(value.get("height"), field_name="height", task_id=task_id)
-    original_width = _require_number(
-        result.get("original_width"),
-        field_name="original_width",
-        task_id=task_id,
-    )
-    original_height = _require_number(
-        result.get("original_height"),
-        field_name="original_height",
-        task_id=task_id,
-    )
 
-    x1 = round(original_width * x / 100, 2)
-    y1 = round(original_height * y / 100, 2)
-    x2 = round(x1 + original_width * width / 100, 2)
-    y2 = round(y1 + original_height * height / 100, 2)
+    x1 = round(x * 10, 2)
+    y1 = round(y * 10, 2)
+    x2 = round((x + width) * 10, 2)
+    y2 = round((y + height) * 10, 2)
     return [x1, y1, x2, y2]
 
 
@@ -282,3 +270,15 @@ def _require_number(value: object, *, field_name: str, task_id: object) -> float
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"任务 {task_id} 的字段 {field_name} 缺少有效数值")
     return float(value)
+
+
+def _build_assistant_content(bbox_count: int) -> str:
+    if bbox_count <= 0:
+        return "[]"
+
+    rows = [
+        '\t{"bbox_2d": <bbox>, "label": "<ref-object>"}'
+        + ("," if index < bbox_count - 1 else "")
+        for index in range(bbox_count)
+    ]
+    return "[\n" + "\n".join(rows) + "\n]"
