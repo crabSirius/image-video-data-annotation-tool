@@ -116,6 +116,7 @@ def test_build_label_studio_subset_copies_submitted_images_and_tracks_missing_fi
     assert summary["available_task_count"] == 3
     assert summary["missing_task_count"] == 1
     assert summary["copied_image_count"] == 3
+    assert summary["source_image_count"] == 2
     assert (tmp_path / "subset" / "images" / "0901" / "damage_tiles" / "tile_0001.jpg").exists()
     assert (tmp_path / "subset" / "images" / "upload" / "1" / "upload_only.png").exists()
     available_tasks = json.loads(
@@ -221,6 +222,15 @@ def test_run_label_studio_delivery_pipeline_writes_subset_jsonls_and_archive(
     assert summary["subset"]["available_task_count"] == 2
     assert summary["conversion"]["positive_only"]["exported_samples"] == 1
     assert summary["conversion"]["per_label_with_negatives"]["exported_samples"] == 4
+    assert summary["stats"] == {
+        "source_image_count": 2,
+        "annotated_image_count": 2,
+        "subset_exported_image_count": 2,
+        "positive_only_exported_image_count": 1,
+        "final_exported_image_count": 2,
+        "empty_annotation_image_count": 1,
+        "label_counts": {"fallen_tree": 1},
+    }
     assert Path(str(summary["package"]["archive_path"])).exists()
     assert load_jsonl(tmp_path / "delivery" / "ms_swift" / "tree_damage_positive_only.jsonl") == [
         {

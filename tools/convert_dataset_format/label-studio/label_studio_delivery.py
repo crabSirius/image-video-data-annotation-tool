@@ -36,6 +36,7 @@ def build_label_studio_subset(
     missing_tasks: list[dict[str, Any]] = []
     copied_image_relpaths: set[str] = set()
     submitted_task_count = 0
+    source_image_count = _count_images(source_image_root)
 
     for task in load_label_studio_export_tasks(export_path):
         annotation = select_latest_submitted_annotation(task)
@@ -79,6 +80,7 @@ def build_label_studio_subset(
         "available_task_count": len(available_tasks),
         "missing_task_count": len(missing_tasks),
         "copied_image_count": len(copied_image_relpaths),
+        "source_image_count": source_image_count,
     }
     write_json(subset_root / "summary.json", summary)
     return summary
@@ -140,6 +142,16 @@ def run_label_studio_delivery_pipeline(
         "conversion": {
             "positive_only": positive_only_summary,
             "per_label_with_negatives": per_label_with_negatives_summary,
+        },
+        "stats": {
+            "source_image_count": int(subset_summary["source_image_count"]),
+            "annotated_image_count": int(subset_summary["submitted_task_count_in_export"]),
+            "subset_exported_image_count": int(subset_summary["copied_image_count"]),
+            "positive_only_exported_image_count": int(positive_only_summary["exported_images"]),
+            "final_exported_image_count": int(per_label_with_negatives_summary["exported_images"]),
+            "empty_annotation_image_count": int(per_label_with_negatives_summary["exported_images"])
+            - int(positive_only_summary["exported_images"]),
+            "label_counts": dict(positive_only_summary["label_counts"]),
         },
         "package": {
             "archive_format": archive_format,
@@ -255,3 +267,11 @@ def _archive_base_name(
     if archive_suffix == ".tar.gz":
         return archive_path.with_suffix("").with_suffix("")
     return archive_path
+
+
+def _count_images(root: Path) -> int:
+    if not root.exists():
+        return 0
+
+    image_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+    return sum(1 for path in root.rglob("*") if path.is_file() and path.suffix.lower() in image_suffixes)

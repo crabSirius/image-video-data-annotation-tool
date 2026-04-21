@@ -23,13 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input", type=Path, required=True, help="Label Studio 导出 JSON 文件")
     parser.add_argument("--source-image-root", type=Path, required=True, help="原始图片根目录")
-    parser.add_argument("--subset-root", type=Path, required=True, help="输出子集目录")
     parser.add_argument(
         "--upload-image-root",
         type=Path,
         default=DEFAULT_LABEL_STUDIO_UPLOAD_ROOT,
         help="Label Studio upload 图片根目录",
     )
+    parser.add_argument("--subset-root", type=Path, required=True, help="输出子集目录")
     parser.add_argument(
         "--allowed-label",
         action="append",
